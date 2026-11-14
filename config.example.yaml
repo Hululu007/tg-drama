@@ -1,0 +1,14 @@
+telegram:
+  proxy: "socks5://127.0.0.1:7890"
+  transport: auto
+
+server:
+  listen: ":5278"
+
+data:
+  dir: "./data"
+
+stream:
+  chunk_kb: 1024
+  cache_mb: 128
+  disk_cache_mb: 2048

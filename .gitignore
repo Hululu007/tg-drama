@@ -1,0 +1,8 @@
+config.yaml
+data/
+dist/
+tg-drama-rule.html
+tgdrama-plugin.zip
+*.exe
+__pycache__/
+.DS_Store
