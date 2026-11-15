@@ -119,7 +119,11 @@ func (m *MatchRules) compile() (*compiledRules, []string) {
 	if len(m.Strip) > maxStripEntries {
 		problems = append(problems, fmt.Sprintf("strip_suffixes 超过 %d 条，请精简", maxStripEntries))
 	}
+	// seen 先装内置词：用户把内置词原样写进文件时不产生重复
 	seen := map[string]bool{}
+	for _, w := range rs.strip {
+		seen[w] = true
+	}
 	for _, w := range m.Strip {
 		w = strings.TrimSpace(w)
 		if w == "" || seen[w] {
