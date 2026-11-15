@@ -50,6 +50,13 @@ type Service struct {
 	matchVersion string
 	matchIndex   *showIndex
 	matchCache   map[string][]MatchedItem
+
+	// 用户可编辑的名称匹配规则（match-rules.yaml），随文件变化热加载。
+	// rulesPath 构造后只读；其余字段由 matchMu 保护。
+	rulesPath     string
+	rules         *compiledRules
+	rulesSig      string
+	rulesProblems []string
 }
 
 // New 创建服务。enabledKeys 为空表示启用全部来源。
@@ -85,6 +92,7 @@ func New(store *storage.DB, dataDir string, interval, timeout time.Duration, ena
 	return &Service{
 		store:     store,
 		cachePath: filepath.Join(dataDir, cacheFileName),
+		rulesPath: filepath.Join(dataDir, RulesFileName),
 		interval:  interval,
 		timeout:   timeout,
 		client:    &http.Client{Timeout: timeout},
@@ -241,6 +249,9 @@ func (s *Service) needsRefresh() bool {
 func (s *Service) Refresh(ctx context.Context, force bool) error {
 	s.refreshMu.Lock()
 	defer s.refreshMu.Unlock()
+
+	// 抓取前先热加载规则文件：用户改完规则，点「立即刷新」就能看到效果
+	s.reloadRules()
 
 	now := s.now().Unix()
 	s.mu.RLock()
@@ -441,23 +452,158 @@ func (s *Service) Payload() Payload {
 }
 
 // showIndex 按媒体库版本缓存匹配索引；库没变就不重复查库。
+// 每次都会顺带检查规则文件是否更新（mtime+大小），更新则热加载。
 func (s *Service) showIndex() *showIndex {
 	if s.store == nil {
-		return buildShowIndex(nil)
+		// 无库场景（单测/未挂库）也要让规则文件热加载与问题汇报正常工作
+		s.matchMu.Lock()
+		s.reloadRulesLocked()
+		rules := s.rules
+		s.matchMu.Unlock()
+		return buildShowIndexWithRules(nil, rules)
 	}
 	version := s.store.VersionTag()
 	s.matchMu.Lock()
 	defer s.matchMu.Unlock()
+	s.reloadRulesLocked()
 	if s.matchVersion == version && s.matchIndex != nil {
 		return s.matchIndex
 	}
 	shows, err := s.store.ListPlayableShows()
 	if err != nil {
 		log.Printf("[rankings] 读取本地片库失败: %v", err)
-		return buildShowIndex(nil)
+		return buildShowIndexWithRules(nil, s.rules)
 	}
-	s.matchIndex = buildShowIndex(shows)
+	s.matchIndex = buildShowIndexWithRules(shows, s.rules)
 	s.matchVersion = version
 	s.matchCache = nil
 	return s.matchIndex
+}
+
+// reloadRulesLocked 检查规则文件签名（mtime+大小），变化时重新加载并使
+// 匹配缓存失效。调用方需持有 matchMu。
+func (s *Service) reloadRulesLocked() {
+	sig := ""
+	if st, err := os.Stat(s.rulesPath); err == nil {
+		sig = fmt.Sprintf("%d:%d", st.ModTime().UnixNano(), st.Size())
+	} else if !os.IsNotExist(err) {
+		sig = "unreadable"
+	}
+	if s.rules != nil && s.rulesSig == sig {
+		return
+	}
+	rules, problems, exists, err := loadRulesFile(s.rulesPath)
+	if err != nil {
+		// 语法/读取出错：保留上一份可用规则（首次则退回内置默认），不让功能挂掉
+		log.Printf("[rankings] 规则文件解析失败，沿用上一次可用规则: %v", err)
+		if s.rules == nil {
+			s.rules = builtinRules()
+		}
+		s.rulesSig = sig
+		s.rulesProblems = append([]string{err.Error()}, problems...)
+		s.matchCache = nil
+		return
+	}
+	first := s.rules == nil
+	s.rules = rules
+	s.rulesSig = sig
+	s.rulesProblems = problems
+	// 规则变了：所有按旧规则匹配出来的结果全部作废
+	s.matchCache = nil
+	s.matchVersion = ""
+	s.matchIndex = nil
+	if len(problems) > 0 {
+		log.Printf("[rankings] 匹配规则已加载，但有 %d 处问题: %s", len(problems), strings.Join(problems, "；"))
+	} else if !first || exists {
+		log.Printf("[rankings] 匹配规则已加载: 别名 %d 条、去尾词 %d 条（含内置）、替换 %d 条、黑名单 %d 条",
+			len(rules.aliasNorm), len(rules.strip), len(rules.replaces), len(rules.blocked))
+	}
+}
+
+// reloadRules 公开版热加载（供 UpdateRules / Refresh 使用）。
+func (s *Service) reloadRules() {
+	s.matchMu.Lock()
+	defer s.matchMu.Unlock()
+	s.reloadRulesLocked()
+}
+
+// RulesStatus 规则文件现状：内容 + 生效条数 + 问题清单（给前端/排查用）。
+func (s *Service) RulesStatus() RulesStatus {
+	s.matchMu.Lock()
+	rules, problems := s.rules, s.rulesProblems
+	s.matchMu.Unlock()
+	if rules == nil {
+		rules = builtinRules()
+	}
+	st := RulesStatus{
+		Path:     s.rulesPath,
+		Exists:   rules != nil && s.rulesSig != "",
+		Problems: problems,
+		Aliases:  len(rules.aliasNorm),
+		Strip:    len(rules.strip),
+		Replaces: len(rules.replaces),
+		Blocked:  len(rules.blocked),
+	}
+	if st.Strip > len(decorationSuffixes) {
+		st.Strip -= len(decorationSuffixes) // 只报用户追加的部分
+	}
+	if rules.fuzzyEnabled {
+		st.Fuzzy = fmt.Sprintf("开启：门槛 %.2f（≥%d 字 %.2f），少于 %d 字不参与",
+			rules.fuzzyThreshold, rules.fuzzyLongAt, rules.fuzzyThresholdLong, rules.fuzzyMin)
+	} else {
+		st.Fuzzy = "关闭（只做精确与去装饰匹配）"
+	}
+	if raw, err := os.ReadFile(s.rulesPath); err == nil {
+		st.Exists = true
+		st.Content = string(raw)
+	} else {
+		st.Content = ""
+	}
+	if st.Problems == nil {
+		st.Problems = []string{}
+	}
+	return st
+}
+
+// UpdateRules 校验并写入新规则文本，成功后立即热加载。
+// 返回 problems（跳过的坏条目清单）；语法错误时返回 err 且不落盘。
+func (s *Service) UpdateRules(text string) ([]string, error) {
+	if strings.TrimSpace(text) == "" {
+		return nil, errors.New("规则内容为空")
+	}
+	if len(text) > maxRulesBytes {
+		return nil, fmt.Errorf("规则内容超过 %dKB 上限", maxRulesBytes>>10)
+	}
+	rules, problems, err := compileRulesText(text)
+	if err != nil {
+		return problems, err
+	}
+	_ = rules // 编译通过即认为可保存；磁盘上的文件随后会被热加载进来
+	tmp := s.rulesPath + ".tmp"
+	if err := os.WriteFile(tmp, []byte(text), 0o644); err != nil {
+		return nil, fmt.Errorf("写入规则文件失败: %w", err)
+	}
+	if err := os.Rename(tmp, s.rulesPath); err != nil {
+		os.Remove(tmp)
+		return nil, fmt.Errorf("替换规则文件失败: %w", err)
+	}
+	s.reloadRules()
+	return problems, nil
+}
+
+// TestMatch 用当前生效的规则试匹配一批榜单标题（调参前的“试金石”）。
+func (s *Service) TestMatch(titles []string) []TestResult {
+	out := make([]TestResult, 0, len(titles))
+	idx := s.showIndex()
+	for _, t := range titles {
+		sh, score, via := idx.matchReason(t)
+		res := TestResult{Title: t, Matched: sh != nil, Score: score, Via: via}
+		if sh != nil {
+			res.ShowID = sh.ID
+			res.ShowName = sh.Name
+			res.EpCount = sh.EpCount
+		}
+		out = append(out, res)
+	}
+	return out
 }

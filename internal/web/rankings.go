@@ -1,7 +1,9 @@
 package web
 
 import (
+	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 
 	"tgdrama/internal/rankings"
@@ -37,4 +39,66 @@ func (s *Server) handleRankingsRefresh(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeError(w, http.StatusInternalServerError, err.Error())
 	}
+}
+
+// handleRankingsRulesGet 查看规则文件现状（内容/条数/问题清单）。
+func (s *Server) handleRankingsRulesGet(w http.ResponseWriter, r *http.Request) {
+	if s.rank == nil {
+		writeError(w, http.StatusBadRequest, "榜单功能未启用")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "data": s.rank.RulesStatus()})
+}
+
+// handleRankingsRulesPut 保存新规则文本（请求体就是 YAML 原文）。
+// 校验通过才落盘；返回 problems 让前端/用户知道哪些条目被跳过了。
+func (s *Server) handleRankingsRulesPut(w http.ResponseWriter, r *http.Request) {
+	if s.rank == nil {
+		writeError(w, http.StatusBadRequest, "榜单功能未启用")
+		return
+	}
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 256<<10))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"ok": false, "error": "规则内容超过 256KB 或读取失败",
+		})
+		return
+	}
+	problems, err := s.rank.UpdateRules(string(body))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"ok": false, "error": err.Error(), "problems": problems,
+		})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok": true, "problems": problems, "data": s.rank.RulesStatus(),
+	})
+}
+
+// handleRankingsRulesTest 用当前规则试匹配一批标题，预览命中方式。
+func (s *Server) handleRankingsRulesTest(w http.ResponseWriter, r *http.Request) {
+	if s.rank == nil {
+		writeError(w, http.StatusBadRequest, "榜单功能未启用")
+		return
+	}
+	var req struct {
+		Titles []string `json:"titles"`
+		Title  string   `json:"title"` // 单标题的便捷写法
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "请求体需要是 JSON：{\"titles\": [\"...\"]}")
+		return
+	}
+	if req.Title != "" && len(req.Titles) == 0 {
+		req.Titles = []string{req.Title}
+	}
+	if len(req.Titles) == 0 {
+		writeError(w, http.StatusBadRequest, "缺少 titles 字段")
+		return
+	}
+	if len(req.Titles) > 50 {
+		req.Titles = req.Titles[:50]
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "data": s.rank.TestMatch(req.Titles)})
 }

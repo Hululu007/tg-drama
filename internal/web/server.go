@@ -153,6 +153,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/rankings", s.handleRankings)
 	mux.HandleFunc("POST /api/rankings/refresh", s.handleRankingsRefresh)
 
+	// 排行榜名称匹配规则（用户可编辑的 match-rules.yaml）
+	mux.HandleFunc("GET /api/rankings/rules", s.handleRankingsRulesGet)
+	mux.HandleFunc("PUT /api/rankings/rules", s.handleRankingsRulesPut)
+	mux.HandleFunc("POST /api/rankings/rules/test", s.handleRankingsRulesTest)
+
 	// 管理
 	mux.HandleFunc("GET /api/chats", s.handleChats)
 	mux.HandleFunc("POST /api/chats/refresh", s.handleChatsRefresh)
