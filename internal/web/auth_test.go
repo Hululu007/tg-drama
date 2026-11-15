@@ -5,6 +5,7 @@ import (
 	"testing"
 )
 
+// TestAuthModeAPI 登录方式接口：默认扫码，切账号后状态可见，非法值拒绝
 func TestAuthModeAPI(t *testing.T) {
 	h, _ := newTestServer(t)
 
@@ -29,11 +30,13 @@ func TestAuthModeAPI(t *testing.T) {
 		t.Fatalf("非法登录方式应返回 400，实际 %d", code)
 	}
 
+	// 账号登录时不应再发二维码
 	if code, _ := doJSON(t, h, http.MethodGet, "/api/account/qr", nil); code != http.StatusNotFound {
 		t.Fatalf("账号登录下 /api/account/qr 应返回 404，实际 %d", code)
 	}
 }
 
+// TestAuthPhoneValidation 手机号/验证码入参校验，避免把空值传给 Telegram
 func TestAuthPhoneValidation(t *testing.T) {
 	h, _ := newTestServer(t)
 

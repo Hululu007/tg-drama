@@ -11,6 +11,7 @@ import (
 	"tgdrama/internal/storage"
 )
 
+// fakeFetcher 生成可预测的字节流，并统计底层读取次数（用于验证缓存与请求合并）
 func fakeFetcher(calls *int32, total int64) sourceFetchFunc {
 	return func(ctx context.Context, src *storage.Source, offset int64, limit int) ([]byte, *storage.Source, error) {
 		if offset >= total {
@@ -28,6 +29,7 @@ func fakeFetcher(calls *int32, total int64) sourceFetchFunc {
 	}
 }
 
+// streamFixture 准备一部剧 + 一路来源，并替换为假读取器
 func streamFixture(t *testing.T) (*Server, *storage.Source, *int32) {
 	t.Helper()
 	srv, store := newTestServerRaw(t)
@@ -54,6 +56,7 @@ func doStream(t *testing.T, srv *Server, method, path, rng string) *httptest.Res
 	return rec
 }
 
+// TestStreamFull 无 Range 时返回 200 全量，并带可拖动所需的响应头
 func TestStreamFull(t *testing.T) {
 	srv, src, _ := streamFixture(t)
 	rec := doStream(t, srv, http.MethodGet, "/api/stream/"+itoa(src.ID), "")
@@ -77,6 +80,7 @@ func TestStreamFull(t *testing.T) {
 	}
 }
 
+// TestStreamRange 拖动进度条时的分段请求
 func TestStreamRange(t *testing.T) {
 	srv, src, _ := streamFixture(t)
 	rec := doStream(t, srv, http.MethodGet, "/api/stream/"+itoa(src.ID), "bytes=1000-2000")
@@ -95,6 +99,7 @@ func TestStreamRange(t *testing.T) {
 	}
 }
 
+// TestStreamOpenEnded 播放器常见的 bytes=N- 写法：一直取到结尾
 func TestStreamOpenEnded(t *testing.T) {
 	srv, src, _ := streamFixture(t)
 	rec := doStream(t, srv, http.MethodGet, "/api/stream/"+itoa(src.ID), "bytes=1048570-")
@@ -106,6 +111,7 @@ func TestStreamOpenEnded(t *testing.T) {
 	}
 }
 
+// TestStreamInvalidRange 越界 Range 必须 416，否则播放器会拿到错位数据
 func TestStreamInvalidRange(t *testing.T) {
 	srv, src, _ := streamFixture(t)
 	rec := doStream(t, srv, http.MethodGet, "/api/stream/"+itoa(src.ID), "bytes=99999999-")
@@ -114,6 +120,7 @@ func TestStreamInvalidRange(t *testing.T) {
 	}
 }
 
+// TestStreamHead HEAD 只回头不回体（宿主播放器探测长度时会用到）
 func TestStreamHead(t *testing.T) {
 	srv, src, _ := streamFixture(t)
 	rec := doStream(t, srv, http.MethodHead, "/api/stream/"+itoa(src.ID), "")
@@ -128,6 +135,7 @@ func TestStreamHead(t *testing.T) {
 	}
 }
 
+// TestStreamCacheReuse 重复请求同一段不再打 Telegram，这是拖动不卡的关键
 func TestStreamCacheReuse(t *testing.T) {
 	srv, src, calls := streamFixture(t)
 	doStream(t, srv, http.MethodGet, "/api/stream/"+itoa(src.ID), "bytes=0-1023")
@@ -141,6 +149,7 @@ func TestStreamCacheReuse(t *testing.T) {
 	}
 }
 
+// discardWriter 只统计字节数，避免把基准测试耗在内存拷贝上
 type discardWriter struct {
 	header http.Header
 	code   int
@@ -152,6 +161,8 @@ func (d *discardWriter) WriteHeader(code int)        { d.code = code }
 func (d *discardWriter) Write(b []byte) (int, error) { d.n += len(b); return len(b), nil }
 func (d *discardWriter) Flush()                      {}
 
+// BenchmarkStreamPipeline 衡量代理自身的开销：假读取器无延迟时能跑多快。
+// 真实瓶颈在 Telegram 网络往返，这里只证明分块/缓存/重组不是瓶颈。
 func BenchmarkStreamPipeline(b *testing.B) {
 	srv, store := newTestServerRaw(b)
 	_, ep1, _ := seedShow(b, store)

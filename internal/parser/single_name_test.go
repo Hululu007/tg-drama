@@ -2,6 +2,8 @@ package parser
 
 import "testing"
 
+// 单集名字的常见错误：容器优先级、容器里带 #、文件名竖线分段、
+// 结尾「话」被误当集号标记、纯集号名字。
 func TestSingleEpNameFixes(t *testing.T) {
 	p := New()
 	cases := []struct{ cap, file, want string }{

@@ -7,6 +7,7 @@ import (
 	"github.com/gotd/td/tgerr"
 )
 
+// TestNormalizePhone 手机号来自输入框/通讯录复制，需统一成 +国家码 再去提交
 func TestNormalizePhone(t *testing.T) {
 	cases := map[string]string{
 		"+86 138-0013-8000": "+8613800138000",
@@ -33,6 +34,7 @@ func TestMaskPhone(t *testing.T) {
 	}
 }
 
+// TestSetLoginMode 登录方式切换：默认扫码，切账号后状态可读，非法值拒绝
 func TestSetLoginMode(t *testing.T) {
 	s := &Service{loginMode: ModeQR, phoneChan: make(chan string, 1), codeChan: make(chan string, 1)}
 	if got := s.LoginMode(); got != ModeQR {
@@ -52,6 +54,7 @@ func TestSetLoginMode(t *testing.T) {
 	}
 }
 
+// TestSubmitPhoneCode 提交手机号 / 验证码进入缓冲通道；格式错误直接拒绝
 func TestSubmitPhoneCode(t *testing.T) {
 	s := &Service{loginMode: ModeQR, phoneChan: make(chan string, 1), codeChan: make(chan string, 1)}
 
@@ -61,7 +64,7 @@ func TestSubmitPhoneCode(t *testing.T) {
 	if err := s.SubmitPhone("+86 138-0013-8000"); err != nil {
 		t.Fatal(err)
 	}
-
+	// 提交手机号会自动切到账号登录
 	if s.LoginMode() != ModePhone {
 		t.Fatalf("提交手机号后应切到账号登录，实际 %s", s.LoginMode())
 	}
@@ -90,6 +93,7 @@ func TestSubmitPhoneCode(t *testing.T) {
 	}
 }
 
+// TestRestoreLoginModeWithoutDB 没有数据库时（单测/临时服务）恢复逻辑不能 panic
 func TestRestoreLoginModeWithoutDB(t *testing.T) {
 	s := &Service{loginMode: ModeQR}
 	s.restoreLoginMode()
@@ -98,6 +102,8 @@ func TestRestoreLoginModeWithoutDB(t *testing.T) {
 	}
 }
 
+// TestIsStaleTokenErr 扫码确认阶段 token 过期属于正常竞态：必须能识别出来，
+// 靠换一张二维码自愈，而不是把 400 AUTH_TOKEN_EXPIRED 当成故障显示给用户。
 func TestIsStaleTokenErr(t *testing.T) {
 	if isStaleTokenErr(nil) {
 		t.Fatal("nil 不应算过期")

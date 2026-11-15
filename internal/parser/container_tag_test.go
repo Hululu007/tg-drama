@@ -2,6 +2,7 @@ package parser
 
 import "testing"
 
+// 两种标题容器共存时，用 #标签 选与它完全一致的那个。
 func TestContainerMatchesTag(t *testing.T) {
 	cases := []struct{ caption, want string }{
 		{
@@ -14,7 +15,7 @@ func TestContainerMatchesTag(t *testing.T) {
 		},
 		{
 			"⚡️ 【兰若夜宴-聂小倩】最新剧集预览 ⚡️ #兰若夜宴聂小倩\n《倩》叁·当劫｜再宽我一夜",
-			"兰若夜宴聂小倩",
+			"兰若夜宴聂小倩", // 标签与容器归一化后相同，采用标签写法
 		},
 	}
 	for _, c := range cases {

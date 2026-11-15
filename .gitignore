@@ -1,8 +1,29 @@
-config.yaml
+# 运行时数据
+/data/
 data/
+*.db
+*.db-wal
+*.db-shm
+session.json
+
+# 编译产物
+/tgdrama
+tgdrama
+*.exe
+*.exe~
 dist/
 tg-drama-rule.html
 tgdrama-plugin.zip
-*.exe
+
+# 本地配置
+config.yaml
+
+# 杂项
 __pycache__/
 .DS_Store
+.screenshots/
+.workbuddy/
+.zcode/
+build1.*
+name-audit-preview.*
+rec-*.png

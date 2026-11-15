@@ -2,6 +2,8 @@ package parser
 
 import "testing"
 
+// 频道文案真实格式：「【剧名】EP3-4 内群连载更新至第12集」。
+// 进度说明里的数字不是本条的集号，必须取位置靠前的 EP3-4。
 func TestEpisodeRangeWithProgressText(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -45,6 +47,8 @@ func TestEpisodeRangeWithProgressText(t *testing.T) {
 	}
 }
 
+// 相册声明范围后，成员按组内序号依次落入 [lo,hi]；超出范围的成员算作
+// 最后一集的分段，而不是回到起始集。
 func TestAlbumResolveRange(t *testing.T) {
 	r := NewAlbumResolver()
 	parsed := &Parsed{ShowName: "金牌经纪人", NormName: "金牌经纪人", EpisodeNo: 3, EpEnd: 4}

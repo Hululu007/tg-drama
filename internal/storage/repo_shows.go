@@ -9,6 +9,7 @@ import (
 	"tgdrama/internal/parser"
 )
 
+// UpsertShow 按归一化剧名查找或新建短剧
 func (d *DB) UpsertShow(name, normName string) (int64, bool, error) {
 	return upsertShow(d.db, name, normName)
 }
@@ -35,12 +36,15 @@ VALUES (?, ?, '连载中', ?, ?)`, name, normName, nowUnix(), nowUnix())
 	}
 }
 
+// FindShowByNorm 按归一化剧名查已有短剧的展示名（#标签归属用）
+// GroupSource 相册内一条已入库来源的归属信息（用于多标题预览帖重分配）
 type GroupSource struct {
 	ID        int64
 	MessageID int
 	EpisodeID int64
 }
 
+// ListGroupSources 按消息顺序列出某相册（grouped_id）已入库的来源。
 func (d *DB) ListGroupSources(chatID, groupedID int64) ([]GroupSource, error) {
 	rows, err := d.db.Query(`
 SELECT id, message_id, episode_id FROM sources
@@ -61,6 +65,7 @@ WHERE chat_id = ? AND grouped_id = ? ORDER BY message_id, id`,
 	return out, rows.Err()
 }
 
+// MoveSource 把一条来源改挂到另一集（多标题预览帖按顺序重新分配时使用）。
 func (d *DB) MoveSource(srcID, episodeID int64) error {
 	_, err := d.db.Exec(`UPDATE sources SET episode_id = ?, segment_index = 0 WHERE id = ?`,
 		episodeID, srcID)
@@ -78,6 +83,7 @@ func (d *DB) FindShowByNorm(norm string) (name string, ok bool, err error) {
 	return name, true, nil
 }
 
+// GetShow 按主键查询短剧（含标签与集数）
 func (d *DB) GetShow(id int64) (*Show, error) {
 	row := d.db.QueryRow(showSelectSQL+searchShowWhere+` AND s.id = ?`, id)
 	s, err := scanShow(row)
@@ -90,11 +96,13 @@ func (d *DB) GetShow(id int64) (*Show, error) {
 	return s, nil
 }
 
+// ShowDocAnchor 一条来源消息的定位（sources.chat_id 是 chats 的主键）
 type ShowDocAnchor struct {
 	ChatPK    int64
 	MessageID int
 }
 
+// GetShowDocAnchor 取该短剧任一来源消息的定位，用于 file_reference 过期后重新拉消息
 func (d *DB) GetShowDocAnchor(showID int64) (ShowDocAnchor, bool, error) {
 	var a ShowDocAnchor
 	err := d.db.QueryRow(`
@@ -111,6 +119,17 @@ ORDER BY s.id LIMIT 1`, showID).Scan(&a.ChatPK, &a.MessageID)
 	return a, true, nil
 }
 
+// 集数统计口径（修复虚高/漏算的核心）：
+//
+//	ep_count  = 有视频来源的 distinct 集数（真正能播放的集数）
+//	ep_latest = 有视频来源的最大集号（已更新到第几集，也是总集数的最佳估计）
+//
+// 历史实现直接 COUNT(*) episodes：合并/重建留下的空集、相册连续编号多建的集
+// 都会被算进去，导致「集数虚高」；而按集号去重则避免同一集多条来源被重复计数。
+//
+// 所有「有来源」判定都走 liveSrcCond：只认启用中的频道。关闭频道后其来源仍留在
+// 库里（重新开启立刻恢复），但不再计入剧库的列表、详情、标签、搜索与收藏。
+// 各子查询作用域独立，因此统一用 src 作别名。
 const liveSrcCond = `
           AND src.chat_id IN (SELECT lc.id FROM chats lc WHERE lc.enabled = 1)`
 
@@ -127,6 +146,8 @@ const showBaseColumns = `
 const showSelectSQL = `SELECT ` + showBaseColumns + `
 FROM shows s`
 
+// playableCond 只保留「至少有一集可播」的短剧（集号 >=1 且有启用频道的视频来源）。
+// 纯广告/合集空壳/只剩 0 集残留的条目不再出现在列表、搜索、收藏与标签计数里。
 const playableCond = `
   EXISTS (
     SELECT 1 FROM episodes e2
@@ -134,17 +155,27 @@ const playableCond = `
       AND EXISTS (SELECT 1 FROM sources src WHERE src.episode_id = e2.id` + liveSrcCond + `)
 )`
 
+// playableShowWhere 列表用的条件：可播且未隐藏。
+// hidden = 1 的是被判定为「不是短剧」的条目（泛分类词/拉群话术建的假剧/无法识别的单集），
+// 数据保留但不再出现在列表，规则调整后重新评估即可恢复。
 const playableShowWhere = `
 WHERE s.hidden = 0 AND ` + playableCond
 
+// searchShowWhere 搜索与详情用的条件：只要可播就行，不看 hidden——
+// 「无法识别的单集」按需求只是从列表里摘掉，搜索仍要能找到并打开详情。
 const searchShowWhere = `
 WHERE ` + playableCond
 
+// singleNoCoverCond 隐藏「只有 1 集可播且没有封面」的零散抓取（日期帖、粉丝福利、
+// 双扩展名残留）：这类条目没有「第几集」的追剧结构，也没有封面可看。
+// 注意只对「无封面」生效：有封面的单集条目（正常短剧只发了一集）仍然展示。
+// 只作用于 ListShows / CountShows / CountShowsByTag / ListTags，搜索/详情/收藏不受影响。
 const singleNoCoverCond = `
   AND NOT (s.cover_path = '' AND 1 = (SELECT COUNT(DISTINCT e3.episode_no) FROM episodes e3
        WHERE e3.show_id = s.id AND e3.episode_no >= 1
          AND EXISTS (SELECT 1 FROM sources src WHERE src.episode_id = e3.id` + liveSrcCond + `)))`
 
+// listShowWhere 列表/标签计数使用的过滤条件：可播 + 隐藏「单集且无封面」。
 const listShowWhere = playableShowWhere + singleNoCoverCond
 
 func scanShow(r rowScanner) (*Show, error) {
@@ -176,6 +207,8 @@ WHERE st.show_id = ? ORDER BY t.name`, s.ID)
 	return nil
 }
 
+// showOrderBy 列表排序：默认「自然」按最近更新；sortBy == "episodes" 按可播集数倒序。
+// 集数相同时仍按更新时间，保证分页稳定（ep_count 是 showBaseColumns 里的别名）。
 func showOrderBy(sortBy string) string {
 	if sortBy == "episodes" {
 		return ` ORDER BY ep_count DESC, s.updated_at DESC`
@@ -183,6 +216,7 @@ func showOrderBy(sortBy string) string {
 	return ` ORDER BY s.updated_at DESC`
 }
 
+// ListShows 分页列出短剧，可按标签过滤，sortBy 控制排序（"" 自然 / "episodes" 集数倒序）
 func (d *DB) ListShows(tag, sortBy string, limit, offset int) ([]*Show, error) {
 	var rows *sql.Rows
 	var err error
@@ -203,6 +237,7 @@ JOIN tags t ON t.id = st.tag_id`+listShowWhere+`
 	return d.collectShows(rows)
 }
 
+// SearchShows 本地数据库实时搜索，不访问 Telegram
 func (d *DB) SearchShows(keyword string, limit int) ([]*Show, error) {
 	rows, err := d.db.Query(showSelectSQL+searchShowWhere+`
   AND s.name LIKE ?
@@ -214,6 +249,10 @@ ORDER BY s.updated_at DESC LIMIT ?`, "%"+keyword+"%", limit)
 	return d.collectShows(rows)
 }
 
+// collectShows 收集短剧列表并批量填充标签。
+// 注意：必须先读完并关闭外层结果集，再执行标签查询——
+// 连接池只有 1 个连接，嵌套查询会互相等锁导致死锁。
+// 标签改为一条 IN 查询批量取回（原来每部剧一次，列表 30 部就是 31 次查询）。
 func (d *DB) collectShows(rows *sql.Rows) ([]*Show, error) {
 	defer rows.Close()
 	var out []*Show
@@ -230,6 +269,7 @@ func (d *DB) collectShows(rows *sql.Rows) ([]*Show, error) {
 	return d.finishShows(out)
 }
 
+// finishShows 批量填充标签（调用前外层结果集必须已读完，连接池只有 1 个连接）。
 func (d *DB) finishShows(out []*Show) ([]*Show, error) {
 	if len(out) == 0 {
 		return out, nil
@@ -262,12 +302,15 @@ ORDER BY t.name`, args...)
 	return out, tagRows.Err()
 }
 
+// CountShows 可播短剧总数（与列表口径一致，隐藏 0 可播的空壳条目）
 func (d *DB) CountShows() (int64, error) {
 	var n int64
 	err := d.db.QueryRow(`SELECT COUNT(*) FROM shows s` + listShowWhere).Scan(&n)
 	return n, err
 }
 
+// CountShowsByTag 某标签下的短剧数量；tag 为空时返回总数。
+// 分页判定依赖这个数量，不能再用全库总数，否则按标签筛选时永远翻不完。
 func (d *DB) CountShowsByTag(tag string) (int64, error) {
 	if tag == "" {
 		return d.CountShows()
@@ -281,6 +324,7 @@ JOIN tags t ON t.id = st.tag_id`+listShowWhere+`
 	return n, err
 }
 
+// UpsertEpisode 按剧ID+集号查找或新建剧集
 func (d *DB) UpsertEpisode(showID int64, episodeNo int) (int64, bool, error) {
 	return upsertEpisode(d.db, showID, episodeNo)
 }
@@ -299,7 +343,7 @@ VALUES (?, ?, ?, ?)`, showID, episodeNo, nowUnix(), nowUnix())
 		if ierr != nil {
 			return 0, false, ierr
 		}
-
+		// 新剧集产生，更新短剧的更新时间
 		_, _ = q.Exec(`UPDATE shows SET updated_at = ? WHERE id = ?`, nowUnix(), showID)
 		id, ierr = res.LastInsertId()
 		return id, true, ierr
@@ -308,6 +352,8 @@ VALUES (?, ?, ?, ?)`, showID, episodeNo, nowUnix(), nowUnix())
 	}
 }
 
+// ListEpisodes 列出某部剧的可播剧集（只含有启用频道视频来源的集，
+// 避免把空集/残留集、以及只剩关闭频道来源的集展示成选集入口）
 func (d *DB) ListEpisodes(showID int64) ([]*Episode, error) {
 	rows, err := d.db.Query(`
 SELECT id, show_id, episode_no, title, created_at, updated_at
@@ -330,6 +376,7 @@ ORDER BY episode_no`, showID)
 	return out, nil
 }
 
+// GetEpisode 按主键查询剧集
 func (d *DB) GetEpisode(id int64) (*Episode, error) {
 	var e Episode
 	err := d.db.QueryRow(`
@@ -341,6 +388,7 @@ FROM episodes WHERE id = ?`, id).Scan(&e.ID, &e.ShowID, &e.EpisodeNo, &e.Title, 
 	return &e, nil
 }
 
+// UpsertSource 按频道+消息+分段唯一键查找或新建视频来源
 func (d *DB) UpsertSource(s *Source) (id int64, inserted bool, err error) {
 	var existing int64
 	err = d.db.QueryRow(`
@@ -368,6 +416,7 @@ INSERT INTO sources (
 	return id, true, err
 }
 
+// GetSource 按主键查询来源（含频道名）
 func (d *DB) GetSource(id int64) (*Source, error) {
 	row := d.db.QueryRow(sourceSelectSQL+` WHERE s.id = ?`, id)
 	return scanSource(row)
@@ -393,6 +442,7 @@ func scanSource(r rowScanner) (*Source, error) {
 	return &s, nil
 }
 
+// ListPendingSources 取出待下载的来源（用户点播的优先）
 func (d *DB) ListPendingSources(limit int) ([]*Source, error) {
 	rows, err := d.db.Query(sourceSelectSQL+`
 WHERE s.download_status IN ('pending', 'failed')
@@ -412,11 +462,14 @@ ORDER BY s.priority DESC, s.id LIMIT ?`, limit)
 	return out, nil
 }
 
+// ResetDownloading 将上次运行遗留的 downloading 状态重置为 pending
 func (d *DB) ResetDownloading() error {
 	_, err := d.db.Exec(`UPDATE sources SET download_status = 'pending' WHERE download_status = 'downloading'`)
 	return err
 }
 
+// RequestEpisodePriority 用户点播某集：该集全部来源插队优先下载，
+// 并解除可能卡死的 downloading 状态。
 func (d *DB) RequestEpisodePriority(episodeID int64) error {
 	_, err := d.db.Exec(`
 UPDATE sources SET priority = 1,
@@ -425,6 +478,7 @@ WHERE episode_id = ?`, episodeID)
 	return err
 }
 
+// ResetMediaDownloads 清空视频缓存后重置全部下载状态为待下载
 func (d *DB) ResetMediaDownloads() error {
 	_, err := d.db.Exec(`
 UPDATE sources SET download_status = 'pending', file_path = '', priority = 0
@@ -432,6 +486,7 @@ WHERE download_status IN ('done', 'downloading')`)
 	return err
 }
 
+// UpdateSourceLocation 刷新文件定位信息（file_reference 过期后使用）
 func (d *DB) UpdateSourceLocation(sourceID, docID, accessHash int64, fileReference []byte) error {
 	_, err := d.db.Exec(`
 UPDATE sources SET doc_id = ?, access_hash = ?, file_reference = ?
@@ -439,11 +494,13 @@ WHERE id = ?`, docID, accessHash, fileReference, sourceID)
 	return err
 }
 
+// SetSourceTestSizeForTest 覆盖来源的文件大小，仅供测试构造大文件场景。
 func (d *DB) SetSourceTestSizeForTest(sourceID, size int64) error {
 	_, err := d.db.Exec(`UPDATE sources SET file_size = ? WHERE id = ?`, size, sourceID)
 	return err
 }
 
+// ListEpisodePendingSources 列出某集待下载（pending/failed）的来源
 func (d *DB) ListEpisodePendingSources(episodeID int64, limit int) ([]*Source, error) {
 	rows, err := d.db.Query(sourceSelectSQL+`
 WHERE s.episode_id = ? AND s.download_status IN ('pending', 'failed')
@@ -463,6 +520,8 @@ ORDER BY s.priority DESC, s.id LIMIT ?`, episodeID, limit)
 	return out, nil
 }
 
+// MarkSourceDownloading 认领来源开始下载（pending/failed → downloading）。
+// 返回 false 表示已被其他协程认领，跳过防止重复下载。
 func (d *DB) MarkSourceDownloading(id int64) (bool, error) {
 	res, err := d.db.Exec(`
 UPDATE sources SET download_status = 'downloading', error = ''
@@ -474,6 +533,7 @@ WHERE id = ? AND download_status IN ('pending', 'failed')`, id)
 	return n > 0, nil
 }
 
+// MarkSourceDone 下载完成
 func (d *DB) MarkSourceDone(id int64, filePath string, size int64) error {
 	_, err := d.db.Exec(`
 UPDATE sources SET download_status = 'done', file_path = ?, file_size = ?, error = '' WHERE id = ?`,
@@ -481,18 +541,21 @@ UPDATE sources SET download_status = 'done', file_path = ?, file_size = ?, error
 	return err
 }
 
+// MarkSourceFailed 下载失败并记录原因
 func (d *DB) MarkSourceFailed(id int64, reason string) error {
 	_, err := d.db.Exec(`UPDATE sources SET download_status = 'failed', error = ? WHERE id = ?`,
 		reason, id)
 	return err
 }
 
+// SetShowCover 更新短剧封面
 func (d *DB) SetShowCover(showID int64, coverPath string) error {
 	_, err := d.db.Exec(`UPDATE shows SET cover_path = ? WHERE id = ? AND cover_path = ''`,
 		coverPath, showID)
 	return err
 }
 
+// SetShowIntro 补充短剧简介（仅在为空时写入）
 func (d *DB) SetShowIntro(showID int64, intro string) error {
 	return setShowIntro(d.db, showID, intro)
 }
@@ -503,6 +566,7 @@ func setShowIntro(q execQuerier, showID int64, intro string) error {
 	return err
 }
 
+// AddShowTags 给短剧关联标签（自动建标签）
 func (d *DB) AddShowTags(showID int64, tags []string) error {
 	return addShowTags(d.db, showID, tags)
 }
@@ -524,6 +588,7 @@ func addShowTags(q execQuerier, showID int64, tags []string) error {
 	return nil
 }
 
+// ListTags 全部标签及对应短剧数量（只统计启用频道提供的来源）
 func (d *DB) ListTags() ([]*TagCount, error) {
 	rows, err := d.db.Query(`
 SELECT t.name, COUNT(st.show_id) AS n
@@ -556,6 +621,7 @@ GROUP BY t.id ORDER BY n DESC, t.name`)
 	return out, nil
 }
 
+// CountSourcesByGrouped 统计某频道内同一 grouped_id 已入库的分段数，用于分段编号
 func (d *DB) CountSourcesByGrouped(chatPK int64, groupedID int64) int {
 	var n int
 	_ = d.db.QueryRow(`
@@ -564,6 +630,7 @@ SELECT COUNT(*) FROM sources WHERE chat_id = ? AND grouped_id = ?`,
 	return n
 }
 
+// CountSourceStatuses 统计各状态来源数量（done/failed/pending+downloading）
 func (d *DB) CountSourceStatuses() (done, failed, pending int64) {
 	rows, err := d.db.Query(`
 SELECT download_status, COUNT(*) FROM sources GROUP BY download_status`)
@@ -589,6 +656,8 @@ SELECT download_status, COUNT(*) FROM sources GROUP BY download_status`)
 	return done, failed, pending
 }
 
+// linePlayScore 线路排序分：整条线路的视频总时长越长越像正片。
+// 时长缺失时用文件总大小兜底；短预告片线路会排到最后，播放器默认线路不会选到它。
 func linePlayScore(l *PlayLine) (float64, int64) {
 	var dur float64
 	var size int64
@@ -599,8 +668,12 @@ func linePlayScore(l *PlayLine) (float64, int64) {
 	return dur, size
 }
 
+// ListEpisodeLines 按频道分组返回可播放线路（不再要求已下载，由流式接口实时读取）。
+// 只列启用中的频道：关闭频道的来源不再作为线路出现。
+// 线路按「视频总时长」从长到短排序：同一集里预告片/试看片段线路排在正片之后，
+// 经典播放器默认取第 1 条线路就不会先播预告片；线路内的分段顺序保持不变。
 func (d *DB) ListEpisodeLines(episodeID int64) ([]*PlayLine, error) {
-
+	// 不再要求已下载：未缓存来源由 /api/stream 实时代理
 	rows, err := d.db.Query(sourceSelectSQL+`
 WHERE s.episode_id = ? AND c.enabled = 1
 ORDER BY s.chat_id, s.segment_index`, episodeID)
@@ -638,8 +711,18 @@ ORDER BY s.chat_id, s.segment_index`, episodeID)
 	return lines, nil
 }
 
+// socialPostKeywords 社交平台搬运标记（与 parser 的 reSocialPost 保持一致，
+// 这里用 SQL LIKE 重写一遍是因为要按「全部来源文案」做聚合判断）。
 var socialPostKeywords = []string{"推特", "twitter", "onlyfans", "福利姬"}
 
+// RecomputeHiddenShows 重新评估整库「哪些条目其实不是短剧」，把命中的标记成
+// hidden（整库不再展示，数据保留）。两类目标：
+//  1. 剧名只是「露脸」「大学生」这类泛分类词，或整名是「点此开通 立刻进群追更」
+//     这类拉群话术——把频道里互不相干的视频糊成一部「剧」的产物；
+//  2. 该剧所有来源的文案都带推特/OnlyFans 博主标记——短剧频道顺手转发的福利视频，
+//     不是一部剧。
+//
+// 每次全量重算（两千多行不到 20ms），这样规则放宽后旧条目能自动恢复显示。
 func (d *DB) RecomputeHiddenShows() (int, error) {
 	rows, err := d.db.Query(`SELECT id, name FROM shows`)
 	if err != nil {
@@ -666,7 +749,9 @@ func (d *DB) RecomputeHiddenShows() (int, error) {
 	if err := rows.Err(); err != nil {
 		return 0, err
 	}
-
+	// 「准确识别」= 来源文案里有可信剧名（《》/【】容器或 # 标签）且与当前剧名一致。
+	// 只有一集、又对不上任何可信剧名的，基本是从文件名/裸词硬猜出来的名字
+	// （偷窥4、竖屏、完整1…），先隐藏，搜索仍可查到。
 	titled, container, err := d.identifiedShows()
 	if err != nil {
 		return 0, err
@@ -675,13 +760,17 @@ func (d *DB) RecomputeHiddenShows() (int, error) {
 	if err != nil {
 		return 0, err
 	}
-
+	// 文案里只是提到「推特原创」「推特大佬手搓」的，往往是正常短剧的发布说明；
+	// 只有《》/【】标题容器也对不上时，才按社交平台搬运的福利视频处理。
+	// 这里不用 #标签 兜底：福利视频的标签就是 #试衣间 #寸止 这类话题词，不是剧名。
 	for _, id := range social {
 		if !container[id] {
 			junk = append(junk, id)
 		}
 	}
-
+	// 只有一集、名字又明显不是短剧（演唱会/福利/众筹/美图修图/宣发物料…）的条目，
+	// 用名字关键词单独拦一遍：这类名字提取不出「第几集」，和「正常短剧只发了一集」
+	// 的区别就在内容本身，不能靠集数一刀切。
 	singles, err := d.listNonDramaSingleShows()
 	if err != nil {
 		return 0, err
@@ -696,7 +785,8 @@ func (d *DB) RecomputeHiddenShows() (int, error) {
 			junk = append(junk, id)
 		}
 	}
-
+	// 同一条目可能同时命中多条规则（例如「推特福利」既像社交搬运又是单集福利名），
+	// 去重后再标记，隐藏数才是真实条目数。
 	uniq := junk[:0]
 	seen := make(map[int64]struct{}, len(junk))
 	for _, id := range junk {
@@ -735,6 +825,13 @@ func (d *DB) RecomputeHiddenShows() (int, error) {
 	return len(junk), nil
 }
 
+// listSocialOnlyShows 找出「所有来源文案都是社交平台搬运」的剧：
+// 只要还有一条来源的文案是正常剧集帖，就不算。文案就在 sources.caption 上。
+//
+// 注意这里不能加 hidden = 0：RecomputeHiddenShows 是「先算集合、再统一重置并
+// 标记」，如果只在上次没被隐藏的剧里找，上次已经隐藏的那批就永远算不进来，
+// 结果下一次重算时它们会被解隐藏、重新出现在列表里——隐藏标记于是在两次启动
+// 之间来回跳（实测 133 → 120 → 133）。
 func (d *DB) listSocialOnlyShows() ([]int64, error) {
 	conds := make([]string, 0, len(socialPostKeywords))
 	for _, k := range socialPostKeywords {
@@ -767,6 +864,9 @@ WHERE EXISTS (SELECT 1 FROM episodes e1 JOIN sources x1 ON x1.episode_id = e1.id
 	return out, rows.Err()
 }
 
+// listNonDramaSingleShows 找出「只有一集可播、名字明显不是短剧」的条目。
+// 判据只有名字关键词（演唱会/福利/众筹/美图视频消除/宣发/片花/漫展/街拍/vlog…），
+// 不看集数多少：正常的短剧只发一集也照样展示，演唱会、福利视频、修图工具这类才隐藏。
 func (d *DB) listNonDramaSingleShows() ([]int64, error) {
 	rows, err := d.db.Query(`
 SELECT s.id, s.name FROM shows s
@@ -793,6 +893,8 @@ WHERE 1 = (SELECT COUNT(DISTINCT e.episode_no) FROM episodes e
 	return out, rows.Err()
 }
 
+// listSingleEpisodeShows 找出「只有一集可播」的条目 id。
+// 这类条目里混着大量从文件名硬猜出来的名字，用户要求先隐藏、只留搜索可见。
 func (d *DB) listSingleEpisodeShows() ([]int64, error) {
 	rows, err := d.db.Query(`
 SELECT s.id FROM shows s
@@ -814,6 +916,11 @@ WHERE 1 = (SELECT COUNT(DISTINCT e.episode_no) FROM episodes e
 	return out, rows.Err()
 }
 
+// identifiedShows 返回两组「来源文案里认出了剧名」的剧 id：
+//   - titled：剧名来自《》/【】容器或 # 标签，且与当前剧名一致；
+//   - container：剧名只来自《》/【】容器（更严格，社交搬运筛查用）。
+//
+// 从文件名或正文裸词猜出来的名字两组里都没有。
 func (d *DB) identifiedShows() (titled, container map[int64]bool, err error) {
 	rows, err := d.db.Query(`
 SELECT s.id, s.name, src.caption
@@ -851,7 +958,8 @@ WHERE src.caption <> ''`)
 			continue
 		}
 		titled[id] = true
-
+		// Container 只在剧名确实取自《》/【】容器时置位；HasTitle 在
+		// 剧名取自 #标签 时也会置位，不能用来判断有没有标题容器。
 		if got.Container {
 			container[id] = true
 		}
@@ -859,6 +967,7 @@ WHERE src.caption <> ''`)
 	return titled, container, rows.Err()
 }
 
+// CountHiddenShows 已隐藏的条目数（版本指纹用：清理规则变了要让前端缓存失效）
 func (d *DB) CountHiddenShows() int64 {
 	var n int64
 	_ = d.db.QueryRow(`SELECT COUNT(*) FROM shows WHERE hidden = 1`).Scan(&n)

@@ -11,6 +11,7 @@ import (
 	"tgdrama/internal/storage"
 )
 
+// seedVariantSource 给某集补一条带清晰度版本的来源，返回来源与变体。
 func seedVariantSource(t *testing.T, srv *Server, store *storage.DB, ep int64) (*storage.Source, []*storage.SourceVariant) {
 	t.Helper()
 	lines, err := store.ListEpisodeLines(ep)
@@ -33,6 +34,7 @@ func seedVariantSource(t *testing.T, srv *Server, store *storage.DB, ep int64) (
 	return &src, list
 }
 
+// /qualities 按短边从高到低返回，标签是短边像素；没有副版本时只有主版本。
 func TestEpisodeQualitiesList(t *testing.T) {
 	srv, store := newTestServerRaw(t)
 	_, ep1, _ := seedShow(t, store)
@@ -60,6 +62,7 @@ func TestEpisodeQualitiesList(t *testing.T) {
 		t.Fatal("variant id missing")
 	}
 
+	// 不存在的集：404（前端据此不显示入口）
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/episodes/"+itoa(ep1+9999)+"/qualities", nil))
 	if rec.Code != http.StatusNotFound {
@@ -67,6 +70,7 @@ func TestEpisodeQualitiesList(t *testing.T) {
 	}
 }
 
+// 选清晰度后必须真的用变体自己的 doc 取流；跨集或跨线路的变体拒绝。
 func TestEpisodePlayVariant(t *testing.T) {
 	srv, store := newTestServerRaw(t)
 	_, ep1, ep2 := seedShow(t, store)
@@ -95,6 +99,7 @@ func TestEpisodePlayVariant(t *testing.T) {
 		return rec
 	}
 
+	// 选 480P 变体
 	rec := play(ep1, "?vq="+itoa(vars[1].ID))
 	if rec.Code != http.StatusPartialContent {
 		t.Fatalf("variant play = %d %s", rec.Code, rec.Body.String())
@@ -107,6 +112,7 @@ func TestEpisodePlayVariant(t *testing.T) {
 
 	etag480 := rec.Header().Get("ETag")
 
+	// 切回 720P：缓存键按文档隔离，必须再用 720 的 doc 取，不能命中 480 的块
 	rec = play(ep1, "?vq="+itoa(vars[0].ID))
 	if rec.Code != http.StatusPartialContent {
 		t.Fatalf("variant play = %d", rec.Code)
@@ -120,16 +126,18 @@ func TestEpisodePlayVariant(t *testing.T) {
 	}
 	mu.Unlock()
 
+	// 跨集使用该变体：拒绝
 	if rec := play(ep2, "?vq="+itoa(vars[0].ID)); rec.Code != http.StatusNotFound {
 		t.Fatalf("cross-episode variant should 404, got %d", rec.Code)
 	}
-
+	// 不存在的变体：拒绝
 	if rec := play(ep1, "?vq=999999"); rec.Code != http.StatusNotFound {
 		t.Fatalf("missing variant should 404, got %d", rec.Code)
 	}
 	_ = src
 }
 
+// 同一分辨率可能同时有 H.264 与 HEVC 两个版本：菜单只留一档，优先浏览器能播的编码。
 func TestOneQualityPerHeight(t *testing.T) {
 	list := []qualityView{
 		{VariantID: 1, Width: 1080, Height: 1920, FileSize: 100, Codec: "h265"},
@@ -144,7 +152,7 @@ func TestOneQualityPerHeight(t *testing.T) {
 	if got[0].VariantID != 2 || got[1].VariantID != 3 {
 		t.Fatalf("preferred = %d,%d; want 2,3", got[0].VariantID, got[1].VariantID)
 	}
-
+	// 主版本优先（原始文件必然能播）
 	withMain := append([]qualityView{{VariantID: 0, Width: 1080, Height: 1920, IsMain: true}}, list...)
 	if got := oneQualityPerHeight(withMain); len(got) != 2 || !got[0].IsMain {
 		t.Fatalf("main should win its height: %+v", got)

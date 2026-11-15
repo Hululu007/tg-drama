@@ -11,6 +11,9 @@ import (
 	"tgdrama/internal/storage"
 )
 
+// 预览图还没下载时用该剧封面占位：返回的是封面图本身（不是剧名首字的 SVG），
+// 并且必须带 no-cache —— 否则浏览器会把封面当成这张预览图长期缓存，
+// 真图落盘后也换不回来。
 func TestPhotoUsesCoverAsPlaceholder(t *testing.T) {
 	srv, store := newTestServerRaw(t)
 	h := srv.Handler()
@@ -41,11 +44,12 @@ func TestPhotoUsesCoverAsPlaceholder(t *testing.T) {
 	if cc := rec.Header().Get("Cache-Control"); cc != "no-cache" {
 		t.Fatalf("Cache-Control = %q，期望 no-cache（否则封面会被长期缓存）", cc)
 	}
-
+	// 占位必须标记成「还不是真图」：前端靠这个头在超时后把预览图撤掉
 	if got := rec.Header().Get("X-Photo-Ready"); got != "0" {
 		t.Fatalf("占位响应 X-Photo-Ready = %q，期望 0", got)
 	}
 
+	// 真图落盘后，同一个 URL 必须立刻换成真图
 	photoPath := filepath.Join(t.TempDir(), "photo-555.jpg")
 	const photoBytes = "\xff\xd8\xff\xe0JFIF-real-photo"
 	if err := os.WriteFile(photoPath, []byte(photoBytes), 0o644); err != nil {
@@ -64,11 +68,12 @@ func TestPhotoUsesCoverAsPlaceholder(t *testing.T) {
 	}
 }
 
+// 封面也没有时，退回带剧名首字的 SVG，不能返回空/404
 func TestPhotoFallsBackToSVGWhenNoCover(t *testing.T) {
 	srv, store := newTestServerRaw(t)
 	h := srv.Handler()
 
-	showID, _, _ := seedShow(t, store)
+	showID, _, _ := seedShow(t, store) // 无封面
 	photoID, _, err := store.UpsertShowPhoto(&storage.ShowPhoto{ShowID: showID, Width: 720, Height: 1280},
 		556, 778, []byte("ref"), 1, 1001, 0, "")
 	if err != nil {

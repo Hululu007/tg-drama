@@ -5,6 +5,7 @@ import (
 	"testing"
 )
 
+// 清晰度变体：按 doc_id upsert 保留行 ID、刷新引用不换号，消失的旧版本删除。
 func TestSourceVariantsUpsertAndPreserveIDs(t *testing.T) {
 	d, err := Open(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
@@ -34,12 +35,13 @@ func TestSourceVariantsUpsertAndPreserveIDs(t *testing.T) {
 	if err != nil || len(list) != 2 {
 		t.Fatalf("list = %+v, %v", list, err)
 	}
-
+	// 按短边从高到低
 	if list[0].DocID != 901 || list[1].DocID != 902 {
 		t.Fatalf("order = %d,%d", list[0].DocID, list[1].DocID)
 	}
 	id901 := list[0].ID
 
+	// 刷新：901 换了引用、902 消失、903 新增 —— 901 的行 ID 必须保持不变
 	vars2 := []SourceVariant{
 		{DocID: 901, AccessHash: 11, FileReference: []byte("a2"), FileSize: 500, Duration: 60, Width: 720, Height: 1280, Mime: "video/mp4"},
 		{DocID: 903, AccessHash: 13, FileReference: []byte("c"), FileSize: 200, Duration: 60, Width: 360, Height: 640, Mime: "video/mp4"},
@@ -58,6 +60,7 @@ func TestSourceVariantsUpsertAndPreserveIDs(t *testing.T) {
 		t.Fatalf("new variant missing: %+v", list[1])
 	}
 
+	// 清空：没有副版本时整表无记录
 	if err := d.ReplaceSourceVariantsByID(1, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -65,6 +68,7 @@ func TestSourceVariantsUpsertAndPreserveIDs(t *testing.T) {
 		t.Fatalf("expected empty, got %+v", list)
 	}
 
+	// checked 标记与按变体取
 	if err := d.MarkVariantsChecked(1); err != nil {
 		t.Fatal(err)
 	}

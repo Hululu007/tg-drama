@@ -28,6 +28,8 @@ func writeError(w http.ResponseWriter, code int, msg string) {
 	writeJSON(w, code, map[string]string{"error": msg})
 }
 
+// writeJSONETag 带 ETag 的 JSON 响应：浏览器二次打开同一页时携带 If-None-Match，
+// 媒体库没变化就直接 304（零响应体），省掉整包 JSON 传输与解析。
 func writeJSONETag(w http.ResponseWriter, r *http.Request, etag string, v any) {
 	w.Header().Set("ETag", etag)
 	w.Header().Set("Cache-Control", "private, max-age=0, must-revalidate")
@@ -53,6 +55,8 @@ func parsePathID(r *http.Request, key string) (int64, error) {
 	return strconv.ParseInt(r.PathValue(key), 10, 64)
 }
 
+// ---- 鉴权 ----
+
 func (s *Server) handleAuthStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"authorized": s.svc.IsAuthorized(),
@@ -62,6 +66,8 @@ func (s *Server) handleAuthStatus(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleAuthMode 切换登录方式：PC 端默认扫码，移动端默认账号（手机号 + 验证码）。
+// 前端按设备算好偏好后调这里，后端据此决定生成二维码还是等手机号。
 func (s *Server) handleAuthMode(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Mode string `json:"mode"`
@@ -77,6 +83,7 @@ func (s *Server) handleAuthMode(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"mode": s.svc.LoginMode()})
 }
 
+// handleSubmitPhone 账号登录第一步：提交手机号，Telegram 会发验证码
 func (s *Server) handleSubmitPhone(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Phone string `json:"phone"`
@@ -92,6 +99,7 @@ func (s *Server) handleSubmitPhone(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
+// handleSubmitCode 账号登录第二步：提交验证码
 func (s *Server) handleSubmitCode(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Code string `json:"code"`
@@ -121,14 +129,16 @@ func (s *Server) handleQR(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, msg)
 		return
 	}
-
+	// 二维码 token 只有 30 秒有效期：剩不到 8 秒就别再交给前端了，
+	// 否则用户扫到的是一张必然报 AUTH_TOKEN_EXPIRED 的过期码。
 	if !expires.After(time.Now().Add(8 * time.Second)) {
 		writeError(w, http.StatusNotFound, "二维码即将过期，正在刷新…")
 		return
 	}
-
+	// expires 是 unix 秒：前端据此在过期前主动换码，而不是按固定间隔轮询
 	resp := map[string]any{"url": loginURL, "expires": expires.Unix()}
-
+	// PNG 以 data URL 内联返回：部分广告拦截扩展按 qr.png 这类路径模式
+	// 拦截二维码图片请求，内联数据不触发图片过滤。
 	if pngData, err := s.svc.QrImage(r.Context()); err == nil && len(pngData) > 0 {
 		resp["img"] = "data:image/png;base64," + base64.StdEncoding.EncodeToString(pngData)
 	}
@@ -140,7 +150,7 @@ func (s *Server) handleQRImage(w http.ResponseWriter, r *http.Request) {
 	pngData, err := s.svc.QrImage(r.Context())
 	if err != nil {
 		if errors.Is(err, tgclient.ErrQRNotReady) {
-
+			// 用 503 而不是 404：<img> 出错后前端会按 Retry-After 继续重试
 			w.Header().Set("Retry-After", "2")
 			writeError(w, http.StatusServiceUnavailable, "二维码生成中，请稍候")
 			return
@@ -172,6 +182,7 @@ func (s *Server) handleSubmitPassword(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
+// handleAuthLogout 退出登录：注销授权并清除本地会话，随后客户端以未登录状态重连
 func (s *Server) handleAuthLogout(w http.ResponseWriter, r *http.Request) {
 	if err := s.svc.Logout(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -179,6 +190,8 @@ func (s *Server) handleAuthLogout(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
+
+// ---- 媒体库 ----
 
 func (s *Server) handleTags(w http.ResponseWriter, r *http.Request) {
 	tags, err := s.store.ListTags()
@@ -192,6 +205,8 @@ func (s *Server) handleTags(w http.ResponseWriter, r *http.Request) {
 	writeJSONETag(w, r, quoteETag(s.store.VersionTag()+"-tags"), tags)
 }
 
+// handleBootstrap 首屏聚合接口：一份响应返回标签、首屏短剧、收藏数与「继续观看」，
+// 把原来 3 个往返（/api/tags + /api/favorites + /api/shows + /api/history）合并成 1 个。
 func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 	tags, err := s.store.ListTags()
 	if err != nil {
@@ -234,7 +249,7 @@ func (s *Server) handleShows(w http.ResponseWriter, r *http.Request) {
 		page = 1
 	}
 	const size = 30
-
+	// sortBy："" 自然（最近更新/最近收藏在前），"episodes" 按可播集数倒序
 	sortBy := ""
 	if q.Get("sort") == "episodes" {
 		sortBy = "episodes"
@@ -249,14 +264,15 @@ func (s *Server) handleShows(w http.ResponseWriter, r *http.Request) {
 		total, _ = s.store.CountFavoriteShows()
 	} else {
 		shows, err = s.store.ListShows(q.Get("tag"), sortBy, size, (page-1)*size)
-
+		// 总数必须按当前分类统计，前端据此判断是否还有下一页
 		total, _ = s.store.CountShowsByTag(q.Get("tag"))
 	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-
+	// 收藏列表带「新增集数」，它依赖观看历史，所以 ETag 要把历史指纹算进来，
+	// 否则看完一集后徽标不会消失（列表一直被 304 命中）。
 	etag := quoteETag(fmt.Sprintf("%s-shows-%s-%s-%d-%d", s.store.VersionTag(), sortBy, q.Get("tag"), boolInt(q.Get("fav") == "1"), page))
 	if q.Get("fav") == "1" {
 		etag = quoteETag(fmt.Sprintf("%s-%s-favShows-%s-%d", s.store.VersionTag(), s.store.HistoryTag(), sortBy, page))
@@ -267,7 +283,7 @@ func (s *Server) handleShows(w http.ResponseWriter, r *http.Request) {
 		"page":  page,
 	}
 	if q.Get("fav") == "1" {
-
+		// 收藏页的更新角标需要同一份口径的合计，省掉一次额外请求
 		updates, _ := s.store.CountFavoriteUpdates()
 		body["updates_total"] = updates
 	}
@@ -300,11 +316,12 @@ func (s *Server) handleShowDetail(w http.ResponseWriter, r *http.Request) {
 	if photos == nil {
 		photos = []*storage.ShowPhoto{}
 	}
-
+	// 打开详情页时整页预热：缺图的按频道合并成一次批量取消息，再并发下载。
+	// 预览图不再在采集阶段全量下载（那样会白占几百 MB），改成这里按需拉。
 	if s.svc != nil && len(photos) > 0 {
 		s.svc.RequeueShowPhotos(id)
 	}
-
+	// 观看进度（按最近观看倒序），第一条作为「继续播放」
 	progress, err := s.store.ListShowProgress(id)
 	if err != nil {
 		progress = nil
@@ -327,6 +344,7 @@ func (s *Server) handleShowDetail(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleFillEpisodes 详情页发现选集不连贯时，用「#剧名」在全省范围搜索补全缺失的集
 func (s *Server) handleFillEpisodes(w http.ResponseWriter, r *http.Request) {
 	id, err := parsePathID(r, "id")
 	if err != nil {
@@ -343,7 +361,8 @@ func (s *Server) handleFillEpisodes(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-
+	// force：用户手动点「搜索补全」，即使 1..最大集号之间没有空洞也要去搜
+	// （连载中的剧经常是「只同步到第 2 集」，没有洞，自动补全永远不会触发）。
 	var body struct {
 		Force bool `json:"force"`
 	}
@@ -374,7 +393,7 @@ func (s *Server) handleFillEpisodes(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadGateway, map[string]any{"added": added, "missing": missing, "searched": true, "error": ferr.Error()})
 		return
 	}
-
+	// 补到东西就重新算一遍缺口，前端提示里的「缺 X-Y 集」才是补全之后的真实状态
 	if added > 0 {
 		if eps, eerr := s.store.ListEpisodes(id); eerr == nil {
 			missing = missingEpisodes(eps)
@@ -383,6 +402,7 @@ func (s *Server) handleFillEpisodes(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"added": added, "missing": missing, "searched": true})
 }
 
+// missingEpisodes 找出 1..最大集号 之间没有可播来源的集号，最多检查到 300 集
 func missingEpisodes(episodes []*storage.Episode) []int {
 	have := make(map[int]bool, len(episodes))
 	max := 0
@@ -407,6 +427,7 @@ func missingEpisodes(episodes []*storage.Episode) []int {
 	return out
 }
 
+// handlePhoto 提供剧集预览图
 func (s *Server) handlePhoto(w http.ResponseWriter, r *http.Request) {
 	id, err := parsePathID(r, "id")
 	if err != nil {
@@ -415,11 +436,16 @@ func (s *Server) handlePhoto(w http.ResponseWriter, r *http.Request) {
 	}
 	path, err := s.store.GetShowPhotoPath(id)
 	if err != nil {
-
+		// 记录不存在：这个 ID 本来就没有图
 		writeError(w, http.StatusNotFound, "图片不存在")
 		return
 	}
-
+	// 记录还在但本地文件被清理／丢失：先发占位图，同时让后台按需重新下载，
+	// 清缓存之后图片会自己长回来，不会永久变成灰块。
+	// 占位优先用这部剧的封面（真实画面），没有封面才用剧名首字的 SVG。
+	//
+	// X-Photo-Ready 告诉前端这一张是不是真图：0=封面/SVG 占位（还没下载好），
+	// 1=真图。前端据此在超时后把一直出不来真图的预览图撤掉。
 	if path == "" || !fileExists(path) {
 		w.Header().Set("X-Photo-Ready", "0")
 		if s.svc != nil {
@@ -431,7 +457,7 @@ func (s *Server) handlePhoto(w http.ResponseWriter, r *http.Request) {
 	} else {
 		w.Header().Set("X-Photo-Ready", "1")
 	}
-
+	// 有记录但缓存还没落到本地（或文件被清掉）时发占位图，前端不会出现破图
 	s.servePhoto(w, r, path, id)
 }
 
@@ -463,11 +489,12 @@ func (s *Server) handleEpisodeLines(w http.ResponseWriter, r *http.Request) {
 	if lines == nil {
 		lines = []*storage.PlayLine{}
 	}
-
+	// 播放器线路面板要展示每个频道的可播放版本（时长/分辨率/大小），
+	// 以及默认会播哪一条（active），不必让前端重复实现选源规则。
 	type lineView struct {
 		ChatID   int64  `json:"chat_id"`
 		ChatName string `json:"chat_name"`
-
+		// Segments 保留完整来源列表：经典界面仍在按线路/分段切换播放
 		Segments     []storage.Source `json:"segments"`
 		SegmentCount int              `json:"segment_count"`
 		SourceID     int64            `json:"source_id"`
@@ -491,7 +518,8 @@ func (s *Server) handleEpisodeLines(w http.ResponseWriter, r *http.Request) {
 			ptrs = append(ptrs, &line.Segments[i])
 		}
 		best := pickFromSources(ptrs)
-
+		// 默认来源属于这条线路时，面板展示默认来源的信息（否则会显示同线路里
+		// 那个更长的合集包时长，与默认实际播放的文件不符）。
 		isDefault := false
 		if defaultSrc != nil {
 			for i := range line.Segments {
@@ -517,11 +545,13 @@ func (s *Server) handleEpisodeLines(w http.ResponseWriter, r *http.Request) {
 			v.Width = best.Width
 			v.Height = best.Height
 		}
-
+		// active 表示「默认会播这条线路」：以全局选出的默认来源所在线路为准。
+		// 逐线路各挑各的会把只有合集包的线路也标成 active（默认却播别条），
+		// 面板上就会出现两条「当前」。
 		v.Active = isDefault
 		views = append(views, v)
 	}
-
+	// 播放页需要剧集本身（集数）和所属短剧（标题、选集列表）
 	episode, err := s.store.GetEpisode(id)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "剧集不存在")
@@ -536,7 +566,7 @@ func (s *Server) handleEpisodeLines(w http.ResponseWriter, r *http.Request) {
 	if show, err := s.store.GetShow(episode.ShowID); err == nil {
 		resp["show"] = show
 	}
-
+	// 选集列表随 lines 一次返回，播放页不必再请求 /api/shows/{id}
 	if eps, err := s.store.ListEpisodes(episode.ShowID); err == nil {
 		if eps == nil {
 			eps = []*storage.Episode{}
@@ -546,6 +576,10 @@ func (s *Server) handleEpisodeLines(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+// handleEpisodePlay 给宿主播放器用的稳定播放地址：自动选一路来源后直接输出视频流。
+// 可选 ?chat=<频道ID> 指定线路，播放器切线路时用它固定到某个频道。
+// 可选 ?vq=<变体ID> 指定清晰度（Telegram alt_documents），不传则用当前线路的默认版本。
+// 不走 302：部分宿主播放器不跟随跳转、或跳转后丢掉 Range/请求头，直接出流更稳。
 func (s *Server) handleEpisodePlay(w http.ResponseWriter, r *http.Request) {
 	id, err := parsePathID(r, "id")
 	if err != nil {
@@ -588,6 +622,8 @@ func (s *Server) handleEpisodePlay(w http.ResponseWriter, r *http.Request) {
 	s.serveSource(w, r, picked)
 }
 
+// sourceFromVariant 把清晰度变体转成可流式播放的伪来源：
+// 用变体自己的 doc_id/access_hash/file_reference/size，来源 ID 取负值以区分缓存与引用刷新。
 func (s *Server) sourceFromVariant(episodeID, chatID, variantID int64) (*storage.Source, error) {
 	v, err := s.store.GetSourceVariant(variantID)
 	if err != nil {
@@ -610,6 +646,7 @@ func (s *Server) sourceFromVariant(episodeID, chatID, variantID int64) (*storage
 	return &out, nil
 }
 
+// qualityView 播放页清晰度菜单的一项。variant_id=0 表示主版本（Auto 的基准）。
 type qualityView struct {
 	VariantID int64  `json:"variant_id"`
 	Height    int    `json:"height"`
@@ -617,10 +654,13 @@ type qualityView struct {
 	FileSize  int64  `json:"file_size"`
 	Label     string `json:"label"`
 	IsMain    bool   `json:"is_main"`
-
+	// Codec 只用于同高度去重时的取舍，不下发前端
 	Codec string `json:"-"`
 }
 
+// handleEpisodeQualities 返回这一集当前线路可选的清晰度。
+// Telegram 的 alt_documents 是唯一来源：没有副版本时列表只有主版本，前端据此隐藏入口。
+// 历史库入库时没存过副文档，这里按来源懒补一次（每来源只查一次，失败有冷却）。
 func (s *Server) handleEpisodeQualities(w http.ResponseWriter, r *http.Request) {
 	id, err := parsePathID(r, "id")
 	if err != nil {
@@ -645,7 +685,9 @@ func (s *Server) handleEpisodeQualities(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if !picked.VariantsChecked && s.svc != nil && s.svc.IsAuthorized() && !tgclient.VariantsCoolingDown(picked.ID) {
-
+		// 变体补查放到后台：接口立即返回当前已知档位，前端几秒后二次拉取。
+		// 同步补查最长 8 秒会卡住整个清晰度接口——默认档位迟迟不生效，
+		// 表现为「一直缓冲中，手动换清晰度才好」（2026-11-14 用户反馈）。
 		if _, busy := s.refreshingVariants.LoadOrStore(picked.ID, true); !busy {
 			go func() {
 				defer s.refreshingVariants.Delete(picked.ID)
@@ -665,7 +707,7 @@ func (s *Server) handleEpisodeQualities(w http.ResponseWriter, r *http.Request) 
 	list := make([]qualityView, 0, len(variants)+1)
 	if picked.Height > 0 || picked.Width > 0 {
 		list = append(list, qualityView{
-
+			// 主版本用 -1：0 是「自动」的保留值，两者混用会让菜单同时标出两个「当前」。
 			VariantID: -1, Height: picked.Height, Width: picked.Width,
 			FileSize: picked.FileSize, Label: qualityLabel(picked.Width, picked.Height), IsMain: true,
 		})
@@ -683,6 +725,9 @@ func (s *Server) handleEpisodeQualities(w http.ResponseWriter, r *http.Request) 
 	})
 }
 
+// oneQualityPerHeight 同一清晰度只保留一档，和 Telegram 的菜单一致：
+// 同一条消息常同时带 H.264 与 HEVC 两个同分辨率版本。
+// 取舍顺序：主版本（能正常播的原始文件）> H.264（浏览器兼容）> 体积更大的（画质更高）。
 func oneQualityPerHeight(list []qualityView) []qualityView {
 	best := map[int]qualityView{}
 	order := make([]int, 0, len(list))
@@ -690,7 +735,7 @@ func oneQualityPerHeight(list []qualityView) []qualityView {
 		h := shortSide(q.Width, q.Height)
 		key := h
 		if key == 0 {
-
+			// 分辨率未知的各自独立，避免被合并掉
 			key = -int(q.VariantID) - 1
 		}
 		cur, ok := best[key]
@@ -728,11 +773,13 @@ func preferQuality(a, b qualityView) bool {
 	return a.FileSize > b.FileSize
 }
 
+// playableCodec 浏览器能直接解码的编码；空编码按可播处理（老数据/原始上传）。
 func playableCodec(c string) bool {
 	c = strings.ToLower(strings.TrimSpace(c))
 	return c == "" || c == "h264" || c == "avc1"
 }
 
+// qualityLabel 按短边生成清晰度标签（竖屏 1080×1920 是 1080P），与播放器分辨率文案一致。
 func qualityLabel(w, h int) string {
 	s := shortSide(w, h)
 	if s <= 0 {
@@ -751,6 +798,12 @@ func shortSide(w, h int) int {
 	return h
 }
 
+// pickFromSources 从一批来源里挑「正片」：
+//   - 先排除标题声明了跨集范围的来源（`第1-2集` 这类多集合集文件）：
+//     它包含的不是这一集的内容，只在没有单集来源时才作为兜底；
+//   - 再取时长最长的那一组：频道常把预告片/试看和正片发成同一集，短片段不能当正片；
+//   - 同长度时取体积最小的那个：码率越低网页拉流越快，卡顿越少；
+//   - 时长信息缺失（老数据没有 DocumentAttributeVideo）时视为同一组，同样取最小。
 func pickFromSources(srcs []*storage.Source) *storage.Source {
 	list := make([]*storage.Source, 0, len(srcs))
 	for _, s := range srcs {
@@ -761,7 +814,7 @@ func pickFromSources(srcs []*storage.Source) *storage.Source {
 	if len(list) == 0 {
 		return nil
 	}
-
+	// 多集合集文件（标题写 `第1-2集`）单独放一边：默认线路必须是单集文件。
 	if single := filterMultiEpisodeBundles(list); len(single) > 0 {
 		list = single
 	}
@@ -786,8 +839,12 @@ func pickFromSources(srcs []*storage.Source) *storage.Source {
 	return cand[0]
 }
 
+// reMultiEpisodeTitle 标题里声明了跨集范围：第1-2集 / 第一至二集 / 1-2合集。
+// 这类文件是一个合集包，不属于任何单独一集。
 var reMultiEpisodeTitle = regexp.MustCompile(`(?i)(?:第\s*(?:[0-9]{1,4}|[零一二三四五六七八九十百千两]{1,4})\s*[-~－～—–至到]\s*(?:[0-9]{1,4}|[零一二三四五六七八九十百千两]{1,4})\s*(?:[集话話回]|合集|合辑|合輯)|EP\s*-?\s*[0-9]{1,3}\s*[-~－～—–]\s*(?:EP\s*-?\s*)?[0-9]{1,3})`)
 
+// sourceSpansMultipleEpisodes 该来源是否是多集合集文件。
+// 只看标题（文件名或文案）：分集文件常见「剧名 第1集」「剧名1」，不含范围。
 func sourceSpansMultipleEpisodes(s *storage.Source) bool {
 	if s == nil {
 		return false
@@ -795,11 +852,18 @@ func sourceSpansMultipleEpisodes(s *storage.Source) bool {
 	return reMultiEpisodeTitle.MatchString(s.FileName) || reMultiEpisodeTitle.MatchString(s.Caption)
 }
 
+// filterMultiEpisodeBundles 去掉「多集合集包」来源；没有可替代的单集来源时返回空，
+// 由调用方回退到原列表。
+//
+// 只有「标题声明跨集范围」还不够：同一相册的每条视频常共享
+// 「第1-3集 连载中 全系列完整版」这种整剧文案，文件本身仍是一集。
+// 因此再加时长判据——合集包必须明显更长（≥1.5 倍）于同集其他来源，
+// 例如真实库合并进来的 720s「第1-2集」对比三条 360s 单集。
 func filterMultiEpisodeBundles(list []*storage.Source) []*storage.Source {
 	if len(list) < 2 {
 		return nil
 	}
-
+	// 同集的「单集典型时长」：用未声明跨集范围的来源，没有则用全部来源的中位数。
 	var normal []float64
 	for _, s := range list {
 		if !sourceSpansMultipleEpisodes(s) && s.Duration > 0 {
@@ -841,10 +905,14 @@ func medianOf(ds []float64) float64 {
 		return 0
 	}
 	sort.Float64s(ds)
-
+	// 取偏小的一侧：偶数个来源时偏低值，避免一条超长合集把基准抬高、
+	// 反而让合集自己通过判据。
 	return ds[(len(ds)-1)/2]
 }
 
+// pickEpisodeSource 挑一个可播放来源：同一集可能有多段 / 多频道。
+// 指定 chatID 时只在该频道的来源里挑（播放器切线路）。返回的指针来自 lines 切片副本，
+// 调用方只读使用。
 func (s *Server) pickEpisodeSource(episodeID, chatID int64) (*storage.Source, error) {
 	lines, err := s.store.ListEpisodeLines(episodeID)
 	if err != nil {
@@ -872,7 +940,8 @@ func (s *Server) handleCover(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "无效的短剧ID")
 		return
 	}
-
+	// 没有封面（或封面文件已丢）时发占位图并写进磁盘缓存，
+	// 不返回 404：列表里每张卡都要有图。
 	show, err := s.store.GetShow(id)
 	if err != nil {
 		show = nil
@@ -880,6 +949,9 @@ func (s *Server) handleCover(w http.ResponseWriter, r *http.Request) {
 	s.serveCover(w, r, show, id)
 }
 
+// ---- 观看历史 / 收藏 ----
+
+// handleHistory 观看历史：按剧聚合，每部剧只留最近一集
 func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	list, err := s.store.ListHistory(limit)
@@ -893,6 +965,7 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"list": list})
 }
 
+// handleSaveHistory 播放器定时上报观看进度
 func (s *Server) handleSaveHistory(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		EpisodeID int64   `json:"episode_id"`
@@ -914,6 +987,7 @@ func (s *Server) handleSaveHistory(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
+// handleDeleteHistory 删除单集观看记录
 func (s *Server) handleDeleteHistory(w http.ResponseWriter, r *http.Request) {
 	id, err := parsePathID(r, "id")
 	if err != nil {
@@ -927,6 +1001,7 @@ func (s *Server) handleDeleteHistory(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
+// handleClearHistory 清空全部观看记录
 func (s *Server) handleClearHistory(w http.ResponseWriter, r *http.Request) {
 	if err := s.store.ClearHistory(); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -935,6 +1010,7 @@ func (s *Server) handleClearHistory(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
+// handleFavorites 收藏列表（收藏页用 /api/shows?fav=1 分页，此接口返回全量用于计数）
 func (s *Server) handleFavorites(w http.ResponseWriter, r *http.Request) {
 	list, err := s.store.ListFavoriteShows("", 500, 0)
 	if err != nil {
@@ -951,6 +1027,8 @@ func (s *Server) handleFavorites(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleFavoritesSummary 只要收藏数与更新角标数字，用于首页/播放页刷新徽标。
+// 比拉整个收藏列表轻得多（不查剧集、标签）。
 func (s *Server) handleFavoritesSummary(w http.ResponseWriter, r *http.Request) {
 	total, err := s.store.CountFavoriteShows()
 	if err != nil {
@@ -961,6 +1039,7 @@ func (s *Server) handleFavoritesSummary(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, map[string]any{"total": total, "updates_total": updates})
 }
 
+// handleToggleFavorite 切换收藏状态
 func (s *Server) handleToggleFavorite(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		ShowID int64 `json:"show_id"`
@@ -982,10 +1061,16 @@ func (s *Server) handleToggleFavorite(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"favorited": favorited, "updates_total": updates})
 }
 
+// ---- 管理 ----
+
+// handleChats 频道管理面板的数据：频道列表 + 每个频道的消息/来源数量 + 是否正在同步
 func (s *Server) handleChats(w http.ResponseWriter, r *http.Request) {
 	s.writeChats(w, false, "")
 }
 
+// handleChatsRefresh 打开频道管理时先向 Telegram 拉一次对话列表再返回：
+// 新加入的频道、改过名的频道立刻出现在面板里，省得用户以为「只有这些」。
+// 没登录或拉取失败时退回本地列表，面板照常可用。
 func (s *Server) handleChatsRefresh(w http.ResponseWriter, r *http.Request) {
 	refreshed := false
 	var refreshErr string
@@ -994,7 +1079,8 @@ func (s *Server) handleChatsRefresh(w http.ResponseWriter, r *http.Request) {
 		if err := s.svc.RefreshChats(ctx); err == nil {
 			refreshed = true
 		} else {
-
+			// 失败也把原因带回去：前端要能区分「更新成功」和「显示的是本地旧列表」，
+			// 否则用户会以为频道真的只有这些。
 			refreshErr = err.Error()
 		}
 		cancel()
@@ -1002,6 +1088,8 @@ func (s *Server) handleChatsRefresh(w http.ResponseWriter, r *http.Request) {
 	s.writeChats(w, refreshed, refreshErr)
 }
 
+// writeChats 输出频道面板数据；refreshed 表示刚刚成功向 Telegram 拉过对话列表，
+// refreshErr 非空时表示这次刷新失败、返回的是本地列表。
 func (s *Server) writeChats(w http.ResponseWriter, refreshed bool, refreshErr string) {
 	list, err := s.store.ListChatStats()
 	if err != nil {
@@ -1027,21 +1115,30 @@ func (s *Server) writeChats(w http.ResponseWriter, refreshed bool, refreshErr st
 	})
 }
 
+// ChatRecommend 推荐面板里的一条频道：带可加入的 Telegram 链接
 type ChatRecommend struct {
 	Name     string `json:"name"`
 	Username string `json:"username"`
 	TgChatID int64  `json:"tg_chat_id"`
 	URL      string `json:"url"`
-
+	// Joined 当前账号是否还在这个频道里：已加入的行前端显示「已加入」且不可点，
+	// 避免重复点开 Telegram 加入。
 	Joined bool `json:"joined"`
 }
 
+// defaultRecommendChannels 推荐面板的固定清单：取「当前已启用并加入的短剧频道」
+// 提前固化下来，所有账号看到的都一样——新账号登录时即使没有任何短剧频道，
+// 也能从推荐里一键加入，不会出现「没有频道可用」。
+// 没有公开用户名的私有频道拿不到对外链接，别人点了也加不进去，不列入推荐。
 var defaultRecommendChannels = []ChatRecommend{
 	{Name: "小黄鸭AI短剧｜成人短剧｜黄果短剧｜免费短剧｜黄豆短剧", Username: "aiduanju_huang_666_888", TgChatID: 4425471457},
 	{Name: "AI成人短剧 免费看 【黄果短剧】", Username: "ASC2256", TgChatID: 3894893955},
 	{Name: "Ai成人短剧 免费看", Username: "Air1855555", TgChatID: 4341680939},
 }
 
+// handleChatRecommend 返回推荐频道：固定清单全量展示，与当前账号是否已加入无关。
+// 「已加入」只是角标：本地有这个频道时再问一次 Telegram 拿实时状态，
+// 拿不到状态就按已加入显示（能采集说明在对话列表里）。
 func (s *Server) handleChatRecommend(w http.ResponseWriter, r *http.Request) {
 	local, err := s.store.ListChats()
 	if err != nil {
@@ -1079,6 +1176,9 @@ func (s *Server) handleChatRecommend(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"list": list, "total": len(list)})
 }
 
+// handleChatsJoinRecommend 一键加入全部推荐频道：
+// 已是成员的跳过，加入成功/已存在的频道入库并强制启用，随后立刻回填历史。
+// 首次使用引导调用；失败逐个返回，不互相影响。
 func (s *Server) handleChatsJoinRecommend(w http.ResponseWriter, r *http.Request) {
 	if s.svc == nil || !s.svc.IsAuthorized() {
 		writeError(w, http.StatusServiceUnavailable, "未登录 Telegram，无法加入频道")
@@ -1094,6 +1194,7 @@ func (s *Server) handleChatsJoinRecommend(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, res)
 }
 
+// handleToggleChat 启用/停用频道；启用后立刻在后台补拉该频道的消息
 func (s *Server) handleToggleChat(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		TgChatID int64 `json:"tg_chat_id"`
@@ -1111,7 +1212,8 @@ func (s *Server) handleToggleChat(w http.ResponseWriter, r *http.Request) {
 	if body.Enabled && s.svc != nil {
 		started = s.svc.KickChatSync(body.TgChatID)
 	}
-
+	// 停用频道时把已入库的数据一并删掉：停用的频道不再采集，留着只会占空间
+	// （用户明确要求「关闭频道时同步删除数据库数据」）。频道行保留，方便重新启用。
 	var purged *storage.PurgeStats
 	if !body.Enabled {
 		st, err := s.store.PurgeChatData(body.TgChatID)
@@ -1125,6 +1227,7 @@ func (s *Server) handleToggleChat(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "syncing": started, "enabled": body.Enabled, "purged": purged})
 }
 
+// handleChatSync 手动让某个频道立即在后台同步（不改变启用状态）
 func (s *Server) handleChatSync(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		TgChatID int64 `json:"tg_chat_id"`
@@ -1152,6 +1255,10 @@ func (s *Server) handleDownloadStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.svc.Queue().Status())
 }
 
+// handleCacheClear 清缓存。
+// kind=photos 只清预览图（索引、封面、观看记录都不动，图片会在访问时按需重下）；
+// kind=video 清视频块磁盘缓存（边播边落盘的那份，清掉后重播需重新从 Telegram 拉流）；
+// 不带 kind 时保留旧行为：清空历史遗留的本地视频缓存。
 func (s *Server) handleCacheClear(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Query().Get("kind") == "video" {
 		if s.disk == nil {
@@ -1175,7 +1282,7 @@ func (s *Server) handleCacheClear(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-
+		// 转码出来的 WebP 也一起清掉，否则磁盘上还留着一份
 		freed += s.ClearWebPCache("photos")
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok": true, "freed_bytes": freed, "freed_files": files,
@@ -1189,6 +1296,7 @@ func (s *Server) handleCacheClear(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
+// handleCacheUsage 缓存占用统计（前端按钮上显示「预览图缓存 xx MB」）
 func (s *Server) handleCacheUsage(w http.ResponseWriter, r *http.Request) {
 	var size int64
 	var files int

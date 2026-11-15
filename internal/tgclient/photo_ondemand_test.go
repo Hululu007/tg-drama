@@ -11,6 +11,9 @@ import (
 	"tgdrama/internal/storage"
 )
 
+// 本地已经有 photo-<docID>.jpg、但库里 cache_path 是空的（下载完成后进程被杀、
+// 或旧版本留下的记录）时，预热必须直接补上缓存标记，而不是再发一次
+// channels.getMessages + 重新下载一遍。否则详情页每次打开都会重复请求同一张图。
 func TestWarmPhotosAdoptsExistingFile(t *testing.T) {
 	dir := t.TempDir()
 	db, err := storage.Open(filepath.Join(dir, "t.db"))
@@ -45,11 +48,14 @@ func TestWarmPhotosAdoptsExistingFile(t *testing.T) {
 		t.Fatalf("upsert photo: %v", err)
 	}
 
+	// 文件已在磁盘上，库里却没记路径
 	path := filepath.Join(cfg.PhotoDir(), fmt.Sprintf("photo-%d.jpg", docID))
 	if err := os.WriteFile(path, []byte("fake-jpeg"), 0o644); err != nil {
 		t.Fatalf("write photo: %v", err)
 	}
 
+	// 传 nil api：如果没有走「本地已存在」分支，就会因为缺 API 而白跑，
+	// 这里只验证不会发请求也不报错，且缓存标记被补上。
 	if err := svc.warmShowPhotos(context.Background(), nil, showID); err != nil {
 		t.Fatalf("warm show photos: %v", err)
 	}

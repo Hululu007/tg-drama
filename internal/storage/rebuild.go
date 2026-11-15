@@ -11,8 +11,12 @@ import (
 	"tgdrama/internal/parser"
 )
 
+// rebuildVersion 重建版本号：解析规则升级后 +1 即可触发全库重建
+// （v31：收紧「# 全是分类词」的标签定名，历史假剧靠重解析修正）
 const rebuildVersion = "43"
 
+// rawDoc 是 pending_msgs.info_json 里 tg.Document 的子集，
+// 用于把「同步时因缺 caption 被丢弃」的视频重新纳入媒体库。
 type rawDoc struct {
 	ID            int64  `json:"ID"`
 	AccessHash    int64  `json:"AccessHash"`
@@ -27,6 +31,12 @@ type rawDoc struct {
 	} `json:"Attributes"`
 }
 
+// RebuildFromRaw 基于来源行上的原始 caption 按最新解析规则重建全库映射：
+// 剧名/剧集归属、分段顺序、预览图、标签与简介。一次性迁移，kv 记录版本。
+// 下载状态与已下载文件不受影响。
+//
+// 性能：解析阶段纯内存计算；落库阶段把上万条 UPSERT 收进一个事务，
+// 分段重编号也批量提交，避免每条语句各自 fsync（旧实现 40–60 秒）。
 func (d *DB) RebuildFromRaw(p *parser.Parser) error {
 	done, _, err := d.GetKV("rebuild_v" + rebuildVersion)
 	if err != nil {
@@ -38,6 +48,9 @@ func (d *DB) RebuildFromRaw(p *parser.Parser) error {
 	log.Printf("开始按新解析规则重建媒体库映射（v%s）…", rebuildVersion)
 	loadStart := time.Now()
 
+	// 1. 载入来源的原始文案；同时记录每个相册（grouped_id）的 caption，
+	// 供无 caption 的相册成员共用，避免把文件名里的模板集号当成集号。
+	// 文案直接存在 sources.caption 上，没有 caption 的消息不占行。
 	type msgKey struct {
 		chat int64
 		msg  int
@@ -71,11 +84,13 @@ ORDER BY 1, 2`)
 	}
 	rows.Close()
 
+	// 2. 载入全部视频来源（按频道+消息顺序，保证相册连续分集可重放）
 	type srcRow struct {
 		id, episodeID, chatID, groupedID int64
 		messageID                        int
 		fileName                         string
-
+		// 以下字段只对「复活」的待归属消息有意义：sources 里还没有它的行，
+		// 需要靠 info_json 里的文档信息新建来源。
 		revived    bool
 		fileSize   int64
 		duration   float64
@@ -104,6 +119,10 @@ FROM sources ORDER BY chat_id, message_id, id`)
 	}
 	rows.Close()
 
+	// 2.1 复活待归属的视频：相册 caption 只挂在其中一条消息上，先入库的那些
+	// 成员当初读不到 caption、文件名又是哈希，被判定为垃圾丢掉了。它们留在
+	// pending_msgs 里，这里用同组 caption 重新解析后补成正式来源。
+	// （原先这一步读的是与 sources 等长的 raw_messages，现已收窄到这一小撮。）
 	revived := 0
 	rows, err = d.db.Query(`
 SELECT p.chat_id, p.message_id, p.grouped_id, p.info_json
@@ -141,7 +160,7 @@ ORDER BY p.chat_id, p.message_id`)
 			}
 		}
 		if s.fileName == "" {
-
+			// 没有文件名的文档无法判断剧集归属，保持原样跳过
 			continue
 		}
 		if doc.FileReference != "" {
@@ -166,6 +185,8 @@ ORDER BY p.chat_id, p.message_id`)
 	log.Printf("载入原文与来源 %d 条（含待复活视频 %d 条，耗时 %s）",
 		len(srcs), revived, time.Since(loadStart).Round(time.Millisecond))
 
+	// 3. 逐条重新解析（先只算不落库）：需要先拿到「有《》/【】标题容器」的
+	// 可信剧名集合，才能用 #标签 给推广/合集帖定名。
 	type candidate struct {
 		src         srcRow
 		text        string
@@ -177,21 +198,22 @@ ORDER BY p.chat_id, p.message_id`)
 		dropped     bool
 	}
 	parseStart := time.Now()
-	groupedCount := map[gKey]int{}
-	groupSize := map[gKey]int{}
+	groupedCount := map[gKey]int{} // 相册内已分配的视频数
+	groupSize := map[gKey]int{}    // 相册内视频总数（判断是否「单视频 + 范围文案」）
 	for _, s := range srcs {
 		if s.groupedID != 0 {
 			groupSize[gKey{s.chatID, s.groupedID}]++
 		}
 	}
-	albums := parser.NewAlbumResolver()
+	albums := parser.NewAlbumResolver() // 相册集号分配器（与在线采集同一套规则）
 	cands := make([]candidate, 0, len(srcs))
-	var dropped []int64
+	var dropped []int64 // 无法识别的垃圾来源 ID
 
 	for _, s := range srcs {
 		text := texts[msgKey{s.chatID, s.messageID}]
 		fromCaption := strings.TrimSpace(text) != ""
-
+		// 相册 caption 只挂在其中一条消息上，其余成员共用同组 caption，
+		// 否则会退回到文件名里的模板集号（如「EP110 全10集」）。
 		if !fromCaption && s.groupedID != 0 {
 			if gt := groupText[gKey{s.chatID, s.groupedID}]; gt != "" {
 				text, fromCaption = gt, true
@@ -201,7 +223,8 @@ ORDER BY p.chat_id, p.message_id`)
 		if pp, perr := p.Parse(text, s.fileName); perr == nil && pp.NormName != "" {
 			c.showName, c.norm, c.parsed = pp.ShowName, pp.NormName, pp
 		}
-
+		// 垃圾识别：随机串/哈希/采集站命名（faststart_oybfvg54、Qhwfres4nq btc8），
+		// 以及水印包名（甄选视频、合集）。有《》/【】/#标签 的名字也要过一遍。
 		if c.norm != "" && parser.IsJunkName(c.showName) {
 			if s.id != 0 {
 				dropped = append(dropped, s.id)
@@ -209,7 +232,8 @@ ORDER BY p.chat_id, p.message_id`)
 			continue
 		}
 		if c.norm == "" {
-
+			// 解析失败：用视频文件名兜底；清洗后仍为空（纯哈希/720p 类
+			// 垃圾文件名）则丢弃该来源，避免污染媒体库
 			cleaned := parser.NameFromFileName(s.fileName)
 			if parser.IsJunkName(cleaned) || parser.IsJunkShowName(cleaned) {
 				if s.id != 0 {
@@ -225,7 +249,7 @@ ORDER BY p.chat_id, p.message_id`)
 				continue
 			}
 		}
-
+		// 集号分配与在线采集一致：相册声明范围 > 单集 caption > 文件名 > 相册起点
 		k := gKey{s.chatID, s.groupedID}
 		c.epNo = albums.ResolveSized(s.chatID, s.groupedID, c.parsed, fromCaption, s.fileName, groupedCount[k], groupSize[k])
 		if s.groupedID != 0 {
@@ -234,6 +258,9 @@ ORDER BY p.chat_id, p.message_id`)
 		cands = append(cands, c)
 	}
 
+	// 3.05 多标题预览帖：一条 caption 依次列出 N 部剧的预览（如「《母上攻略》第6集
+	// 《兄弟妈妈好好操》第7集 …」），相册里正好有 N 个视频时按出现顺序一一对应，
+	// 避免把 6 部剧的预览片段全算成第一部剧同一集的 6 个分段。
 	multiApplied := 0
 	{
 		groupIdx := map[gKey][]int{}
@@ -269,6 +296,9 @@ ORDER BY p.chat_id, p.message_id`)
 		}
 	}
 
+	// 3.1 #标签辅助定名：没有标题容器的帖子，若带有一个「正好等于已有可信剧名」
+	// 的标签，就归到那部剧，而不是新建「爱情公寓 91」这类营销后缀近似名。
+	// 只信《》/【】容器里出现的剧名，避免把 #ai短剧 这类泛标签当剧名。
 	canon := map[string]string{}
 	for _, c := range cands {
 		if c.parsed != nil && c.parsed.HasTitle && c.norm != "" {
@@ -278,7 +308,7 @@ ORDER BY p.chat_id, p.message_id`)
 		}
 	}
 	tagMatched := 0
-
+	// 用户确认过的异名归类：先把候选名映射到规范名，再按规范名归并。
 	for i := range cands {
 		if canon, ok := manualShowAliases[cands[i].showName]; ok {
 			cands[i].showName, cands[i].norm = canon, parser.Normalize(canon)
@@ -304,10 +334,13 @@ ORDER BY p.chat_id, p.message_id`)
 	log.Printf("重建解析完成：%d/%d 条来源（解析耗时 %s），丢弃 %d 条垃圾来源，标签辅助归并 %d 条，多标题预览分配 %d 条",
 		len(cands), len(srcs), time.Since(parseStart).Round(time.Millisecond), len(dropped), tagMatched, multiApplied)
 
-	groupedShow := map[gKey]int64{}
+	groupedShow := map[gKey]int64{} // 相册 → 剧ID（供图片反查）
 	renamed := 0
 	revivedBack := 0
 
+	// 3.2 落库：所有 UPSERT/UPDATE 放进一个事务，一次提交。
+	// 先把剧/集/标签读进内存做字典，逐条来源只做「取 ID、必要时插入」，
+	// 回填用临时表 + 批量 VALUES，几千条来源也只产生上百条语句。
 	writeStart := time.Now()
 
 	showIDByNorm := map[string]int64{}
@@ -358,7 +391,7 @@ ORDER BY p.chat_id, p.message_id`)
 	if _, err := tx.Exec(`DELETE FROM show_tags`); err != nil {
 		return err
 	}
-
+	// 一次性打散 segment_index，避免 (chat_id, message_id, segment_index) 唯一键冲突
 	if _, err := tx.Exec(`UPDATE sources SET segment_index = -id`); err != nil {
 		return err
 	}
@@ -503,6 +536,7 @@ VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)`)
 		}
 	}
 
+	// 批量回填 episode_id：临时表 + 一条 UPDATE 顶掉数千条单行 UPDATE
 	if len(epPairs) > 0 {
 		if _, err := tx.Exec(`CREATE TEMP TABLE IF NOT EXISTS rebuild_ep_map (
     src_id INTEGER PRIMARY KEY, ep_id INTEGER NOT NULL)`); err != nil {
@@ -537,6 +571,7 @@ WHERE id IN (SELECT src_id FROM rebuild_ep_map)`); err != nil {
 		}
 	}
 
+	// 批量写剧-标签关联（已按剧去重）
 	if len(showTags) > 0 {
 		pairs := make([][2]int64, 0, len(showTags))
 		for k := range showTags {
@@ -563,6 +598,7 @@ WHERE id IN (SELECT src_id FROM rebuild_ep_map)`); err != nil {
 		}
 	}
 
+	// 简介只在原本为空时补一次
 	for showID, intro := range introFor {
 		if err := setShowIntro(tx, showID, intro); err != nil {
 			return err
@@ -575,6 +611,7 @@ WHERE id IN (SELECT src_id FROM rebuild_ep_map)`); err != nil {
 	log.Printf("重建写库耗时 %s，补回历史丢弃的视频 %d 条",
 		time.Since(writeStart).Round(time.Millisecond), revivedBack)
 
+	// 4. 重编分段号：同剧同频道按消息顺序；查询完再开事务，避免单连接被占
 	segStart := time.Now()
 	rows, err = d.db.Query(`
 SELECT id, episode_id, chat_id, message_id FROM sources ORDER BY episode_id, chat_id, message_id, id`)
@@ -625,6 +662,9 @@ SELECT id, episode_id, chat_id, message_id FROM sources ORDER BY episode_id, cha
 	}
 	log.Printf("已更新 %d 条来源归属与分段（耗时 %s）", renamed, time.Since(segStart).Round(time.Millisecond))
 
+	// 5. 预览图重新归属：先按自身 caption 解析，失败则按同相册视频反查。
+	// 先把剧名索引和相册分组读进内存，再在一个事务里批量 UPDATE，
+	// 避免每张图 2–3 次单独查询/提交（旧实现在 2600 张图上要 ~0.6 秒）。
 	photoStart := time.Now()
 	normToID := map[string]int64{}
 	if nrows, err := d.db.Query(`SELECT id, norm_name FROM shows`); err == nil {
@@ -676,7 +716,7 @@ SELECT id, episode_id, chat_id, message_id FROM sources ORDER BY episode_id, cha
 			target = normToID[parsed.NormName]
 		}
 		if target == 0 {
-
+			// 相册图片：与视频同 grouped，反查同相册视频所属剧
 			grouped := ph.groupedID
 			if grouped == 0 {
 				grouped = groupedByMsg[msgKey{ph.chatID, ph.messageID}]
@@ -713,6 +753,7 @@ SELECT id, episode_id, chat_id, message_id FROM sources ORDER BY episode_id, cha
 	}
 	log.Printf("预览图重新归属 %d 张（耗时 %s）", remapped, time.Since(photoStart).Round(time.Millisecond))
 
+	// 6. 清理孤儿数据：无来源的集、无集无图的剧
 	cleanStart := time.Now()
 	if _, err := d.db.Exec(`DELETE FROM episodes WHERE id NOT IN (SELECT DISTINCT episode_id FROM sources)`); err != nil {
 		return err
@@ -731,7 +772,9 @@ UNION SELECT DISTINCT show_id FROM show_photos)`)
 	if n, _ := res.RowsAffected(); n > 0 {
 		log.Printf("已清理 %d 部空壳短剧", n)
 	}
-
+	// 6.1 只剩预览图、没有剧集，剧名又是分类词的假剧（#制服 / #诱惑 这类
+	// 旧规则按标签建的）：连图一起清掉，否则列表里会一直挂着「诱惑」这种条目。
+	// 有正经剧名的「纯图集」不在此列。
 	if n, err := d.purgeJunkPhotoOnlyShows(); err != nil {
 		return err
 	} else if n > 0 {
@@ -740,6 +783,7 @@ UNION SELECT DISTINCT show_id FROM show_photos)`)
 
 	log.Printf("清理孤儿数据耗时 %s", time.Since(cleanStart).Round(time.Millisecond))
 
+	// 重建后统计信息已过期，ANALYZE 让查询规划器重新选索引（首屏列表受益明显）
 	anaStart := time.Now()
 	if _, err := d.db.Exec("ANALYZE"); err != nil {
 		log.Printf("ANALYZE 失败（不影响使用）: %v", err)
@@ -752,6 +796,10 @@ UNION SELECT DISTINCT show_id FROM show_photos)`)
 	return nil
 }
 
+// purgeJunkPhotoOnlyShows 删除「没有剧集、只剩预览图、剧名本身是分类词」的假剧。
+// 这些是旧解析规则把 #制服 / #诱惑 这类标签当剧名建出来的空壳，图片已无从
+// 归属到真剧，留着只会让列表里出现「诱惑」这种条目；连同 show_photos /
+// show_tags 行一起删。返回删除的剧数。
 func (d *DB) purgeJunkPhotoOnlyShows() (int, error) {
 	rows, err := d.db.Query(`SELECT id, name FROM shows WHERE id NOT IN (
 SELECT DISTINCT show_id FROM episodes)`)
@@ -795,6 +843,7 @@ SELECT DISTINCT show_id FROM episodes)`)
 	return len(ids), nil
 }
 
+// buildRebuildIntro 与 ingest 的 buildIntro 相同：取前 200 字做简介
 func buildRebuildIntro(text string) string {
 	text = strings.TrimSpace(text)
 	runes := []rune(text)
@@ -804,6 +853,7 @@ func buildRebuildIntro(text string) string {
 	return text
 }
 
+// hasHan 是否包含汉字
 func hasHan(s string) bool {
 	for _, r := range s {
 		if r >= 0x4E00 && r <= 0x9FFF {

@@ -14,12 +14,14 @@ import (
 	"tgdrama/internal/tgclient"
 )
 
+// newTestServer 建一个带真实 SQLite 的测试服务，方便直接造数据
 func newTestServer(t *testing.T) (http.Handler, *storage.DB) {
 	t.Helper()
 	srv, store := newTestServerRaw(t)
 	return srv.Handler(), store
 }
 
+// newTestServerRaw 同上，但返回 *Server，便于替换流读取实现
 func newTestServerRaw(t testing.TB) (*Server, *storage.DB) {
 	t.Helper()
 	dir := t.TempDir()
@@ -72,7 +74,7 @@ func seedShow(t testing.TB, store *storage.DB) (showID, ep1, ep2 int64) {
 	if err != nil {
 		t.Fatal(err)
 	}
-
+	// sources.chat_id 外键指向 chats(id)，先建一个频道
 	chatID, err := store.UpsertChat(&storage.Chat{TgChatID: 100, Name: "测试频道", Enabled: true})
 	if err != nil {
 		t.Fatal(err)
@@ -98,6 +100,7 @@ func TestHistoryAndFavorites(t *testing.T) {
 	h, store := newTestServer(t)
 	showID, ep1, ep2 := seedShow(t, store)
 
+	// 上报进度
 	code, out := doJSON(t, h, http.MethodPost, "/api/history", map[string]any{
 		"episode_id": ep1, "position": 120.0, "duration": 600.0,
 	})
@@ -105,6 +108,7 @@ func TestHistoryAndFavorites(t *testing.T) {
 		t.Fatalf("保存进度失败: %d %v", code, out)
 	}
 
+	// 历史列表按剧聚合
 	code, out = doJSON(t, h, http.MethodGet, "/api/history", nil)
 	list, _ := out["list"].([]any)
 	if code != http.StatusOK || len(list) != 1 {
@@ -118,6 +122,7 @@ func TestHistoryAndFavorites(t *testing.T) {
 		t.Fatalf("进度比例 = %v", item["progress"])
 	}
 
+	// 详情页带收藏状态、进度、继续播放
 	code, out = doJSON(t, h, http.MethodGet, "/api/shows/"+itoa(showID), nil)
 	if code != http.StatusOK || out["favorited"] != false {
 		t.Fatalf("详情收藏状态: %d %v", code, out["favorited"])
@@ -131,6 +136,7 @@ func TestHistoryAndFavorites(t *testing.T) {
 		t.Fatalf("继续播放 = %v", out["continue"])
 	}
 
+	// 收藏
 	code, out = doJSON(t, h, http.MethodPost, "/api/favorites/toggle", map[string]any{"show_id": showID})
 	if code != http.StatusOK || out["favorited"] != true {
 		t.Fatalf("收藏失败: %d %v", code, out)
@@ -144,11 +150,13 @@ func TestHistoryAndFavorites(t *testing.T) {
 		t.Fatalf("收藏计数: %v", out["total"])
 	}
 
+	// 播放页：lines 里带剧集与进度
 	code, out = doJSON(t, h, http.MethodGet, "/api/episodes/"+itoa(ep1)+"/lines", nil)
 	if code != http.StatusOK || out["episode"] == nil || out["progress"] == nil {
 		t.Fatalf("播放信息缺失: %d %v", code, out)
 	}
 
+	// 第二集看完：历史仍只有一条（按剧聚合），且换成第二集
 	doJSON(t, h, http.MethodPost, "/api/history", map[string]any{
 		"episode_id": ep2, "position": 500.0, "duration": 500.0,
 	})
@@ -161,6 +169,7 @@ func TestHistoryAndFavorites(t *testing.T) {
 		t.Fatalf("最新历史条目 = %v", item)
 	}
 
+	// 删除单条历史
 	code, out = doJSON(t, h, http.MethodDelete, "/api/history/"+itoa(ep2), nil)
 	if code != http.StatusOK {
 		t.Fatalf("删除历史 = %d %v", code, out)
@@ -170,6 +179,7 @@ func TestHistoryAndFavorites(t *testing.T) {
 		t.Fatalf("删除后应剩余第一集: %v", list)
 	}
 
+	// 清空历史
 	code, _ = doJSON(t, h, http.MethodDelete, "/api/history", nil)
 	if code != http.StatusOK {
 		t.Fatalf("清空历史 = %d", code)
@@ -179,6 +189,7 @@ func TestHistoryAndFavorites(t *testing.T) {
 		t.Fatalf("清空后历史 = %v", list)
 	}
 
+	// 取消收藏
 	code, out = doJSON(t, h, http.MethodPost, "/api/favorites/toggle", map[string]any{"show_id": showID})
 	if code != http.StatusOK || out["favorited"] != false {
 		t.Fatalf("取消收藏: %d %v", code, out)
@@ -188,6 +199,7 @@ func TestHistoryAndFavorites(t *testing.T) {
 		t.Fatalf("取消后收藏数 = %v", out["total"])
 	}
 
+	// 异常输入
 	if code, _ = doJSON(t, h, http.MethodPost, "/api/history", map[string]any{"episode_id": 99999}); code != http.StatusNotFound {
 		t.Fatalf("不存在剧集应 404，得到 %d", code)
 	}
@@ -203,18 +215,24 @@ func itoa(v int64) string {
 	return strconv.FormatInt(v, 10)
 }
 
+// TestFavoriteUpdates 收藏更新提醒的判定：
+//   - 收藏时已有的集不算更新（基线 = 收藏时的最新集）
+//   - 还停在第一集不提示
+//   - 追到收藏时的最新一集后，新发布的集才计数
+//   - 看完新集后归零
 func TestFavoriteUpdates(t *testing.T) {
 	h, store := newTestServer(t)
 	showID, ep1, ep2 := seedShow(t, store)
 
+	// 收藏时这部剧有 2 集，基线 = 2
 	if on, err := store.ToggleFavorite(showID); err != nil || !on {
 		t.Fatalf("收藏失败: %v", err)
 	}
-
+	// 只看了第 1 集
 	if err := store.SaveHistory(ep1, 120, 600); err != nil {
 		t.Fatal(err)
 	}
-
+	// 之后频道更新到第 3 集
 	ep3, _, err := store.UpsertEpisode(showID, 3)
 	if err != nil {
 		t.Fatal(err)
@@ -229,6 +247,7 @@ func TestFavoriteUpdates(t *testing.T) {
 		t.Fatalf("停在第一集不应提示更新：updates=%d watched=%d", list[0].Updates, list[0].WatchedEp)
 	}
 
+	// 追到收藏时的最新一集（第 2 集）
 	if err := store.SaveHistory(ep2, 60, 600); err != nil {
 		t.Fatal(err)
 	}
@@ -240,6 +259,7 @@ func TestFavoriteUpdates(t *testing.T) {
 		t.Fatalf("角标合计 = %d, %v", n, err)
 	}
 
+	// 收藏页接口也要带上同样的数字
 	_, out := doJSON(t, h, http.MethodGet, "/api/shows?fav=1", nil)
 	if out["updates_total"].(float64) != 1 {
 		t.Fatalf("收藏列表 updates_total = %v", out["updates_total"])
@@ -249,6 +269,7 @@ func TestFavoriteUpdates(t *testing.T) {
 		t.Fatalf("汇总接口 updates_total = %v", out["updates_total"])
 	}
 
+	// 看完第 3 集后更新归零
 	if err := store.SaveHistory(ep3, 900, 900); err != nil {
 		t.Fatal(err)
 	}
@@ -261,14 +282,16 @@ func TestFavoriteUpdates(t *testing.T) {
 	}
 }
 
+// TestFavoriteUpdatesIgnoreWhenBehind 收藏时就没追到最新一集（进度落后很多），
+// 之后发布的新集不算「这次更新」，避免一收藏就冒出几十集未读。
 func TestFavoriteUpdatesIgnoreWhenBehind(t *testing.T) {
 	_, store := newTestServer(t)
 	showID, ep1, _ := seedShow(t, store)
 
-	if _, err := store.ToggleFavorite(showID); err != nil {
+	if _, err := store.ToggleFavorite(showID); err != nil { // 基线 = 2
 		t.Fatal(err)
 	}
-	if err := store.SaveHistory(ep1, 10, 600); err != nil {
+	if err := store.SaveHistory(ep1, 10, 600); err != nil { // 只看了第 1 集
 		t.Fatal(err)
 	}
 	ep3, _, _ := store.UpsertEpisode(showID, 3)

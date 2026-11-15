@@ -2,6 +2,7 @@ package parser
 
 import "testing"
 
+// 标题容器按出现位置取：正文开头的【剧名】优先于简介里引用的《别的剧》。
 func TestTitleContainerOrder(t *testing.T) {
 	cases := []struct {
 		caption string

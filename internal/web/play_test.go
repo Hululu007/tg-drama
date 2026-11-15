@@ -9,6 +9,8 @@ import (
 	"tgdrama/internal/storage"
 )
 
+// TestEpisodePlayStreams 宿主播放器用的 /play 地址直接输出视频流：
+// 不再 302 到 /api/stream（部分宿主不跟随跳转，或在跳转后丢掉 Range/请求头）
 func TestEpisodePlayStreams(t *testing.T) {
 	srv, store := newTestServerRaw(t)
 	_, ep1, _ := seedShow(t, store)
@@ -38,6 +40,7 @@ func TestEpisodePlayStreams(t *testing.T) {
 		t.Fatalf("Content-Length = %q", got)
 	}
 
+	// 拖动时宿主会带 Range：/play 也要能正常分段
 	req = httptest.NewRequest(http.MethodGet, "/api/episodes/"+itoa(ep1)+"/play", nil)
 	req.Header.Set("Range", "bytes=500-999")
 	rec = httptest.NewRecorder()
@@ -46,6 +49,7 @@ func TestEpisodePlayStreams(t *testing.T) {
 		t.Fatalf("Range 应 206 且 500 字节，得到 %d / %d", rec.Code, rec.Body.Len())
 	}
 
+	// 不存在的剧集
 	rec = httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/episodes/99999/play", nil))
 	if rec.Code != http.StatusNotFound {
@@ -53,6 +57,7 @@ func TestEpisodePlayStreams(t *testing.T) {
 	}
 }
 
+// addSource 给某集补一条来源，用于模拟「预告片 + 正片」混在同一集
 func addSource(t *testing.T, store *storage.DB, epID, tgChatID int64, msgID int,
 	duration float64, size int64, name string) *storage.Source {
 	t.Helper()
@@ -77,9 +82,10 @@ func addSource(t *testing.T, store *storage.DB, epID, tgChatID int64, msgID int,
 	return got
 }
 
+// TestPickLongestSource 同一集里混入短预告片时，默认播放必须选时长最长的正片
 func TestPickLongestSource(t *testing.T) {
 	srv, store := newTestServerRaw(t)
-	_, ep1, _ := seedShow(t, store)
+	_, ep1, _ := seedShow(t, store) // 原有来源：无时长信息、1MB
 	trailer := addSource(t, store, ep1, 200, 2000, 15, 2<<20, "预告片.mp4")
 	full := addSource(t, store, ep1, 300, 3000, 900, 8<<20, "正片.mp4")
 
@@ -93,7 +99,7 @@ func TestPickLongestSource(t *testing.T) {
 	if picked.ID == trailer.ID {
 		t.Fatal("不能把 15 秒预告片当成正片播放")
 	}
-
+	// 经典播放器默认取第 1 条线路，也要是正片线路
 	lines, err := store.ListEpisodeLines(ep1)
 	if err != nil || len(lines) == 0 {
 		t.Fatalf("线路为空: %v", err)
@@ -103,9 +109,11 @@ func TestPickLongestSource(t *testing.T) {
 	}
 }
 
+// TestPickSmallestSizeWhenSameDuration 同一时长下取体积最小的版本：
+// 码率越低网页拉流越快，卡顿越少。
 func TestPickSmallestSizeWhenSameDuration(t *testing.T) {
 	srv, store := newTestServerRaw(t)
-	_, ep1, _ := seedShow(t, store)
+	_, ep1, _ := seedShow(t, store) // 1MB，无时长
 	small := addSource(t, store, ep1, 500, 5000, 600, 4<<20, "低码率.mp4")
 	addSource(t, store, ep1, 501, 5001, 600, 12<<20, "中等码率.mp4")
 	addSource(t, store, ep1, 502, 5002, 600, 40<<20, "最高码率.mp4")
@@ -119,17 +127,19 @@ func TestPickSmallestSizeWhenSameDuration(t *testing.T) {
 	}
 }
 
+// TestPickLineSource 指定线路时只在该频道的来源里挑
 func TestPickLineSource(t *testing.T) {
 	srv, store := newTestServerRaw(t)
 	_, ep1, _ := seedShow(t, store)
 	lineA := addSource(t, store, ep1, 600, 6000, 900, 8<<20, "频道A正片.mp4")
 	lineB := addSource(t, store, ep1, 601, 6001, 1200, 20<<20, "频道B正片.mp4")
 
+	// 不指定线路：时长更长的 B
 	picked, err := srv.pickEpisodeSource(ep1, 0)
 	if err != nil || picked.ID != lineB.ID {
 		t.Fatalf("默认应选时长更长的 B，得到 %v %v", picked, err)
 	}
-
+	// 指定 A：即使 B 更长也只播 A
 	picked, err = srv.pickEpisodeSource(ep1, lineA.ChatID)
 	if err != nil {
 		t.Fatal(err)
@@ -139,6 +149,7 @@ func TestPickLineSource(t *testing.T) {
 	}
 }
 
+// TestCORS 宿主页面（file:// 或其他源）需要能直接调用本机 API
 func TestCORS(t *testing.T) {
 	h, _ := newTestServer(t)
 

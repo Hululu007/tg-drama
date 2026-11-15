@@ -2,6 +2,8 @@ package parser
 
 import "testing"
 
+// 频道里 caption 为空、只靠 Telegram 自动命名的视频，文件名常是哈希/采集残留，
+// 以前会被当成剧名建出一堆无意义条目（faststart oybfvg54 / Qhwfres4nq btc8）。
 func TestIsJunkNameRandomStems(t *testing.T) {
 	junk := []string{
 		"faststart oybfvg54",
@@ -46,6 +48,7 @@ func TestIsJunkNameRandomStems(t *testing.T) {
 	}
 }
 
+// 无 caption 的视频走文件名兜底时，随机串必须被判为垃圾而不是建剧。
 func TestParseRejectsRandomFileName(t *testing.T) {
 	for _, f := range []string{"faststart_oybfvg54.mp4", "Qhwfres4nq4kbtc8.mp4", "IMG_9376.MOV"} {
 		p, err := New().Parse("", f)

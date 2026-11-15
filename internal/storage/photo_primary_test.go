@@ -5,6 +5,8 @@ import (
 	"testing"
 )
 
+// 预览图只认「预览图最多的启用频道」：
+// 关闭的频道即使图更多也不参与，全部频道都关闭时干脆不返回图片。
 func TestListShowPhotosUsesSingleEnabledChat(t *testing.T) {
 	d, err := Open(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
@@ -23,6 +25,7 @@ func TestListShowPhotosUsesSingleEnabledChat(t *testing.T) {
 	mustExec(`INSERT INTO chats (id, tg_chat_id, name, enabled, created_at) VALUES (3, 103, 'C', 0, 0)`)
 	mustExec(`INSERT INTO shows (id, name, norm_name, created_at, updated_at) VALUES (1, '测试剧', '测试剧', 0, 0)`)
 
+	// 频道 A 2 张、B 3 张、C（已关闭）5 张
 	add := func(chatID, msgID int64) {
 		mustExec(`INSERT INTO show_photos (show_id, chat_id, message_id, doc_id, width, height, created_at)
 		          VALUES (1, ?, ?, ?, 720, 1280, 0)`, chatID, msgID, chatID*1000+msgID)
@@ -60,6 +63,7 @@ func TestListShowPhotosUsesSingleEnabledChat(t *testing.T) {
 		t.Fatalf("预热只能落在一个频道（应为首选频道 2），得到 %v", chats)
 	}
 
+	// 关掉 B：应回落到 A，且绝不选关闭的 C
 	mustExec(`UPDATE chats SET enabled = 0 WHERE id = 2`)
 	photos, err = d.ListShowPhotos(1)
 	if err != nil {
@@ -69,6 +73,7 @@ func TestListShowPhotosUsesSingleEnabledChat(t *testing.T) {
 		t.Fatalf("B 关闭后应回落到 A 的 2 张，得到 %d 张", len(photos))
 	}
 
+	// 全部关闭：没有可用的图片源，返回空而不是偷偷用关闭频道的图
 	mustExec(`UPDATE chats SET enabled = 0 WHERE id = 1`)
 	photos, err = d.ListShowPhotos(1)
 	if err != nil {

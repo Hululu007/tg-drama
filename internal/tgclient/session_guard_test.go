@@ -37,6 +37,9 @@ func TestIsSessionDead(t *testing.T) {
 	}
 }
 
+// 会话被注销的自愈逻辑：登录中的 AUTH_KEY_UNREGISTERED 是正常状态（gotd 用它
+// 表示「这个 auth key 还没登录」），不能清会话；已登录后同样的错误才代表
+// 会话被 Telegram 注销，必须清掉本地会话并回到登录界面。
 func TestSessionGuard(t *testing.T) {
 	dir := t.TempDir()
 	sess := filepath.Join(dir, "session.json")
@@ -50,6 +53,7 @@ func TestSessionGuard(t *testing.T) {
 	})
 	invoke := s.sessionGuard(next)
 
+	// 未登录：视为正常，不删会话文件
 	if err := invoke(context.Background(), nil, nil); err == nil {
 		t.Fatal("错误应原样返回")
 	}
@@ -57,6 +61,7 @@ func TestSessionGuard(t *testing.T) {
 		t.Fatalf("未登录时不应删除会话文件: %v", err)
 	}
 
+	// 已登录：判定会话被注销，清会话 + 提示 + 重新连接
 	s.authorized = true
 	if err := invoke(context.Background(), nil, nil); err == nil {
 		t.Fatal("错误应原样返回")

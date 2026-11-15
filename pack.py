@@ -1,3 +1,12 @@
+# -*- coding: utf-8 -*-
+"""把 tgdrama 打包成 Go 插件：zip 根目录 = plugin.json + tgdrama-android（ELF，可执行位 755）。
+
+用法：
+    python pack.py             # 只编 Android arm64（插件宿主用）
+    python pack.py --windows   # 顺带编 Windows 版，方便桌面调试
+
+产物：tgdrama-plugin.zip
+"""
 import hashlib
 import json
 import os
@@ -14,15 +23,18 @@ DIST = os.path.join(ROOT, "dist")
 BIN = os.path.join(DIST, "tgdrama-android")
 OUT = os.environ.get("PACK_OUT") or os.path.join(ROOT, "tgdrama-plugin.zip")
 
+
 def build(goos, goarch, out):
     env = dict(os.environ, CGO_ENABLED="0", GOOS=goos, GOARCH=goarch)
     print("[build] %s/%s -> %s" % (goos, goarch, out))
     subprocess.run(
-
+        # tags=nodynamic：WebP 编码固定走纯 Go 实现，不依赖系统 libwebp。
+        # 交叉编译到 Android 时 CGO_ENABLED=0，动态加载那套编不过，必须关掉。
         ["go", "build", "-tags", "nodynamic", "-trimpath",
          "-ldflags", "-s -w -buildid=", "-o", out, "./cmd/tgdrama"],
         cwd=ROOT, env=env, check=True,
     )
+
 
 def check_elf(path):
     with open(path, "rb") as f:
@@ -30,6 +42,7 @@ def check_elf(path):
     if magic != b"\x7fELF":
         sys.exit("二进制不是 ELF（魔数 %r），检查 GOOS/GOARCH 环境变量是否生效" % magic)
     print("[check] ELF 魔数 OK")
+
 
 def export_rule():
     """导出侧载规则页：与内置首页同一份，只多一行宿主播放标记（内置页不推播放器）。"""
@@ -49,6 +62,7 @@ def export_rule():
     open(dst, "wb").write(data)
     print("[rule] 已导出 tg-drama-rule.html (%d bytes)" % len(data))
 
+
 def deflate(data):
     """DEFLATE 压缩：能用 zopfli 就用（比 zlib -9 再小约 4%，代价是慢几十秒），
     否则退回 zlib level 9。返回裸 deflate 流（zip 的 method 8 要求，不带 zlib 头尾）。"""
@@ -56,13 +70,14 @@ def deflate(data):
         import zopfli.zlib as zz
 
         stream = zz.compress(data)
-
+        # zlib 头 2 字节 + adler32 4 字节；确认是 deflate 且没有预置字典
         if len(stream) > 6 and (stream[0] & 0x0F) == 8 and (stream[1] & 0x20) == 0:
             return stream[2:-4]
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - 装不上 zopfli 时静默退回
         print("[zip] zopfli 不可用（%s），退回 zlib -9" % exc)
     c = zlib.compressobj(9, zlib.DEFLATED, -15, 9)
     return c.compress(data) + c.flush()
+
 
 def write_zip(entries, out):
     """手写 ZIP：python 的 zipfile 不支持外挂压缩器，而 zopfli 能再省几 MB。
@@ -96,12 +111,14 @@ def write_zip(entries, out):
     with open(out, "wb") as f:
         f.write(bytes(body) + bytes(central) + eocd)
 
+
 def md5(path):
     h = hashlib.md5()
     with open(path, "rb") as f:
         for chunk in iter(lambda: f.read(1 << 20), b""):
             h.update(chunk)
     return h.hexdigest()
+
 
 def main():
     os.makedirs(DIST, exist_ok=True)
@@ -134,6 +151,7 @@ def main():
     size = os.path.getsize(OUT)
     print("[pack] %s: %d bytes (%.2f MB), md5=%s" % (OUT, size, size / 1048576.0, md5(OUT)))
     print("[pack] 结构断言通过")
+
 
 if __name__ == "__main__":
     main()

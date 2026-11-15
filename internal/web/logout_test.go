@@ -11,6 +11,8 @@ import (
 	"tgdrama/internal/tgclient"
 )
 
+// TestAuthLogout 退出登录：清除会话文件、状态回到未登录；未连接时（api 为 nil）
+// 不触网也能完成本地清理
 func TestAuthLogout(t *testing.T) {
 	dir := t.TempDir()
 	cfg := config.Default()
@@ -30,6 +32,7 @@ func TestAuthLogout(t *testing.T) {
 	}
 	h := NewServer(store, svc).Handler()
 
+	// 伪造一个已存在的会话文件：退出登录后必须被删除
 	sessionPath := cfg.SessionPath()
 	if err := os.WriteFile(sessionPath, []byte(`{"key":"test"}`), 0o600); err != nil {
 		t.Fatal(err)
@@ -42,6 +45,7 @@ func TestAuthLogout(t *testing.T) {
 		t.Fatalf("会话文件应被删除，stat err = %v", err)
 	}
 
+	// 状态接口应回到未登录
 	code, out := doJSON(t, h, http.MethodGet, "/api/account/state", nil)
 	if code != http.StatusOK || out["authorized"] != false {
 		t.Fatalf("退出后 authorized 应为 false: %d %v", code, out)

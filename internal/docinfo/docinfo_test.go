@@ -6,6 +6,9 @@ import (
 	"testing"
 )
 
+// 压缩后必须只留索引字段：内联缩略图字节、VideoThumbs、Flags 都要丢，
+// 但下载缩略图（ID/AccessHash/FileReference/Thumbs）和重建映射
+// （Size/MimeType/Attributes 里的时长与分辨率/文件名）需要的字段不能少。
 func TestCompactStripsInlineThumbBytes(t *testing.T) {
 	raw := `{"Flags":1,"ID":5897914468859387151,"AccessHash":5612855056145980810,` +
 		`"FileReference":"BQAAAADqTjv2AAAvEWr1BEz98XKKOtzyJ/bW1FgncVpL","Date":1790609887,` +
@@ -51,6 +54,7 @@ func TestCompactStripsInlineThumbBytes(t *testing.T) {
 	}
 }
 
+// 已经是精简格式的不该反复改写（幂等），空值也不该报错
 func TestCompactIdempotent(t *testing.T) {
 	compact := `{"ID":1,"AccessHash":2,"Size":3,"MimeType":"video/mp4"}`
 	if out, changed := Compact(compact); changed || out != compact {

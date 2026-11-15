@@ -9,6 +9,7 @@ import (
 	"testing"
 )
 
+// TestBootstrap 首屏聚合接口应一次返回标签、首屏列表、收藏数与继续观看
 func TestBootstrap(t *testing.T) {
 	h, store := newTestServer(t)
 	showID, _, _ := seedShow(t, store)
@@ -49,6 +50,7 @@ func TestBootstrap(t *testing.T) {
 	}
 }
 
+// TestGzipJSON 带 Accept-Encoding: gzip 时 JSON 接口应压缩并可被正常解压
 func TestGzipJSON(t *testing.T) {
 	h, store := newTestServer(t)
 	seedShow(t, store)
@@ -80,6 +82,7 @@ func TestGzipJSON(t *testing.T) {
 	}
 }
 
+// TestETagNotModified 媒体库未变化时，带 If-None-Match 的请求应返回 304，省掉整包 JSON
 func TestETagNotModified(t *testing.T) {
 	h, store := newTestServer(t)
 	seedShow(t, store)
@@ -102,6 +105,7 @@ func TestETagNotModified(t *testing.T) {
 		t.Fatalf("304 不应带响应体，实际 %d 字节", rec.Body.Len())
 	}
 
+	// 数据变化后 ETag 必须跟着变，否则前端会一直吃旧缓存
 	showID, _, _ := seedShow(t, store)
 	if _, err := store.ToggleFavorite(showID); err != nil {
 		t.Fatal(err)
@@ -113,6 +117,7 @@ func TestETagNotModified(t *testing.T) {
 	}
 }
 
+// TestGzipSkipsBinary 视频流/封面等二进制接口不能被 gzip 包装（否则 Range 与 Content-Length 失效）
 func TestGzipSkipsBinary(t *testing.T) {
 	h, store := newTestServer(t)
 	seedShow(t, store)

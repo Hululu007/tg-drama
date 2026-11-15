@@ -15,10 +15,12 @@ import (
 	"tgdrama/internal/storage"
 )
 
+// slowFetcher 模拟一次 upload.getFile 挂死：第一次调用永不返回，
+// 之后（信号量应已因超时被释放）恢复正常返回数据。
 func slowFetcher(release *atomic.Bool) sourceFetchFunc {
 	return func(ctx context.Context, src *storage.Source, offset int64, limit int) ([]byte, *storage.Source, error) {
 		if !release.Load() {
-
+			// 故意不响应 ctx 取消：模拟 gotd RPC 在 ACK 丢失后挂死
 			<-make(chan struct{})
 		}
 		data := make([]byte, limit)
@@ -29,6 +31,8 @@ func slowFetcher(release *atomic.Bool) sourceFetchFunc {
 	}
 }
 
+// TestStreamStuckChunkDoesNotBlockForever 挂死的块读取必须被超时打断，
+// 释放全局信号量让后续请求继续播放（问题1「一直缓冲中」的根因回归测试）。
 func TestStreamStuckChunkDoesNotBlockForever(t *testing.T) {
 	srv, store := newTestServerRaw(t)
 	_, ep1, _ := seedShow(t, store)
@@ -44,6 +48,7 @@ func TestStreamStuckChunkDoesNotBlockForever(t *testing.T) {
 	srv.chunkOverallTimeout = 600 * time.Millisecond
 	srv.fetchChunk = slowFetcher(&release)
 
+	// 第一个请求：首块挂死，服务端应在整体超时内返回明确错误而不是永远挂着
 	start := time.Now()
 	rec := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/stream/"+itoa(src.ID), nil))
@@ -54,6 +59,7 @@ func TestStreamStuckChunkDoesNotBlockForever(t *testing.T) {
 		t.Fatalf("首块失败应 502，得到 %d", rec.Code)
 	}
 
+	// 信号量已释放：第二个请求能正常出流
 	release.Store(true)
 	rec2 := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rec2, httptest.NewRequest(http.MethodGet, "/api/stream/"+itoa(src.ID), nil))
@@ -65,6 +71,8 @@ func TestStreamStuckChunkDoesNotBlockForever(t *testing.T) {
 	}
 }
 
+// TestFetchFileChunkHangTimeout fetchFileChunk 层：单次请求挂死被 chunkTimeout 打断，
+// 之后走重试成功返回（这是「一直缓冲中」的核心修复）。
 func TestFetchFileChunkHangTimeout(t *testing.T) {
 	srv, store := newTestServerRaw(t)
 	_, ep1, _ := seedShow(t, store)
@@ -87,11 +95,14 @@ func TestFetchFileChunkHangTimeout(t *testing.T) {
 		t.Fatalf("挂死请求应被打断后恢复，实际耗时 %v", elapsed)
 	}
 	if inv.calls.Load() != 2 {
-
+		// 挂死 1 次（chunkTimeout 打断）+ 重试 1 次成功
 		t.Fatalf("应调用 2 次（1 挂死 + 1 重试），实际 %d", inv.calls.Load())
 	}
 }
 
+// refreshInvoker 第一次 UploadGetFile 返回 FILE_REFERENCE_EXPIRED，
+// 同时模拟 ChannelsGetMessages 返回带最新 file_reference 的消息，
+// 让 srv.svc.RefreshSource 走通真实的刷新路径（重新拉消息→落库→换新引用）。
 type refreshInvoker struct {
 	getFileCalls atomic.Int32
 	getMsgCalls  atomic.Int32
@@ -105,7 +116,7 @@ func (f *refreshInvoker) Invoke(ctx context.Context, input bin.Encoder, output b
 			return tgerr.New(400, "FILE_REFERENCE_EXPIRED")
 		}
 		if box, ok := output.(*tg.UploadFileBox); ok && box != nil {
-
+			// 按请求的 limit 返回：任意块大小都满足「数据不足」校验
 			box.File = &tg.UploadFile{Bytes: make([]byte, in.Limit)}
 		}
 		return nil
@@ -136,6 +147,8 @@ func (f *refreshInvoker) Invoke(ctx context.Context, input bin.Encoder, output b
 	return nil
 }
 
+// TestStreamRefreshedSourcePersists file_reference 过期刷新后，
+// 同一 HTTP 请求的后续块直接用新引用，不应每个块都再失败一次。
 func TestStreamRefreshedSourcePersists(t *testing.T) {
 	srv, store := newTestServerRaw(t)
 	_, ep1, _ := seedShow(t, store)
@@ -146,9 +159,10 @@ func TestStreamRefreshedSourcePersists(t *testing.T) {
 	src := &lines[0].Segments[0]
 
 	inv := &refreshInvoker{payload: make([]byte, 256*1024)}
-
+	// 注入假 API：RefreshSource 经由 s.svc.API() 拿客户端
 	srv.svc.SetAPIForTest(tg.NewClient(inv))
-
+	// 真实库里刷新引用不会换文档 ID（只换 access_hash/file_reference），
+	// 这里让假消息回同一个 doc，缓存键才不会因为刷新而多取一次首块。
 	src.DocID = 42
 	if err := store.UpdateSourceLocation(src.ID, 42, 7, []byte("old")); err != nil {
 		t.Fatal(err)
@@ -160,7 +174,7 @@ func TestStreamRefreshedSourcePersists(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/stream/"+itoa(src.ID), nil)
-	req.Header.Set("Range", "bytes=0-1048575")
+	req.Header.Set("Range", "bytes=0-1048575") // 整个 1MB 文件（头块 128KB + 块 1 补齐到 1MB）
 	srv.streamTelegram(rec, req, src)
 	if rec.Code != http.StatusPartialContent {
 		t.Fatalf("应 206（带 Range 请求），得到 %d %s", rec.Code, rec.Body.String())
@@ -168,7 +182,7 @@ func TestStreamRefreshedSourcePersists(t *testing.T) {
 	if rec.Body.Len() != 1<<20 {
 		t.Fatalf("响应体长度 = %d，期望 %d", rec.Body.Len(), 1<<20)
 	}
-
+	// 头块失败一次触发刷新后成功，块 1 直接带新引用成功：共 3 次 getFile
 	if n := inv.getFileCalls.Load(); n != 3 {
 		t.Fatalf("upload.getFile 应调用 3 次（头块失败+成功，块 1 一次），实际 %d", n)
 	}
@@ -177,12 +191,14 @@ func TestStreamRefreshedSourcePersists(t *testing.T) {
 	}
 }
 
+// scriptedInvoker 假 MTProto Invoker：按调用序号编排响应。
+// 用来直接测 fetchFileChunk（真正的 FLOOD_WAIT / file_reference / 超时处理都在这一层）。
 type scriptedInvoker struct {
 	calls    atomic.Int32
-	floodOf  int
-	floodSec int
-	hangOf   int
-	payload  []byte
+	floodOf  int    // 第几次调用返回 FLOOD_WAIT
+	floodSec int    // FLOOD_WAIT 秒数
+	hangOf   int    // 第几次调用挂死（不响应 ctx）
+	payload  []byte // 成功时回填到 tg.UploadFile 的字节
 }
 
 func (f *scriptedInvoker) Invoke(ctx context.Context, input bin.Encoder, output bin.Decoder) error {
@@ -200,6 +216,7 @@ func (f *scriptedInvoker) Invoke(ctx context.Context, input bin.Encoder, output 
 	return nil
 }
 
+// TestFetchFileChunkFloodShortWait fetchFileChunk 层：短暂 FLOOD_WAIT 原地等待后重试成功。
 func TestFetchFileChunkFloodShortWait(t *testing.T) {
 	srv, store := newTestServerRaw(t)
 	_, ep1, _ := seedShow(t, store)
@@ -222,6 +239,8 @@ func TestFetchFileChunkFloodShortWait(t *testing.T) {
 	}
 }
 
+// TestFetchFileChunkFloodLongReturn fetchFileChunk 层：过长 FLOOD_WAIT 立即返回错误，
+// 不占住播放链路干等。
 func TestFetchFileChunkFloodLongReturn(t *testing.T) {
 	srv, store := newTestServerRaw(t)
 	_, ep1, _ := seedShow(t, store)

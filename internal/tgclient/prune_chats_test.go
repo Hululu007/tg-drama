@@ -7,6 +7,8 @@ import (
 	"tgdrama/internal/storage"
 )
 
+// 账号里已经退出的频道不能继续留在库里，否则面板一直显示「已启用」；
+// 拉不到对话列表时（错误）不调用这个函数，所以这里只测「确认退出」的路径。
 func TestPruneMissingChatsDropsDepartedChats(t *testing.T) {
 	db, err := storage.Open(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {

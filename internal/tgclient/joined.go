@@ -9,8 +9,14 @@ import (
 	"tgdrama/internal/storage"
 )
 
+// joinedCacheTTL 推荐面板「是否已加入」结果的缓存时间。
+// 这个接口每次点击都要问一次 TG（channels.getChannels），而「已加入/已退出」
+// 在几分钟内不会变，短缓存能省掉反复点推荐产生的请求。
 const joinedCacheTTL = 60 * time.Second
 
+// JoinedChannels 检查这些频道当前是否仍在这个账号的对话里（没退出、没被踢）。
+// 走 channels.getChannels：对已退出的频道返回的 Channel 会带 left 标志。
+// 返回 nil 表示拿不到实时状态（未登录/网络失败），调用方自行回退本地记录。
 func (s *Service) JoinedChannels(ctx context.Context, chats []*storage.Chat) map[int64]bool {
 	if len(chats) == 0 {
 		return map[int64]bool{}
@@ -40,7 +46,7 @@ func (s *Service) JoinedChannels(ctx context.Context, chats []*storage.Chat) map
 	if len(in) == 0 {
 		return map[int64]bool{}
 	}
-
+	// 推荐面板是交互路径，不能让一次请求把页面卡住：超时就退回本地判断
 	ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
 	defer cancel()
 

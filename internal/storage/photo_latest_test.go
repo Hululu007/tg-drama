@@ -5,6 +5,8 @@ import (
 	"testing"
 )
 
+// 详情页预览图只保留「最新 3 集 + 离视频消息足够近」的图：
+// 旧集的图不再铺出来，跨了几千条消息的频道广告图也会被挡掉。
 func TestListShowPhotosLatestEpisodesOnly(t *testing.T) {
 	d, err := Open(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
@@ -21,6 +23,7 @@ func TestListShowPhotosLatestEpisodesOnly(t *testing.T) {
 	mustExec(`INSERT INTO chats (id, tg_chat_id, name, enabled, created_at) VALUES (1, 101, 'A', 1, 0)`)
 	mustExec(`INSERT INTO shows (id, name, norm_name, created_at, updated_at) VALUES (1, '测试剧', '测试剧', 0, 0)`)
 
+	// 4 集，视频消息分别在第 100/200/300/400 条
 	base := map[int]int{1: 100, 2: 200, 3: 300, 4: 400}
 	for ep := 1; ep <= 4; ep++ {
 		mustExec(`INSERT INTO episodes (id, show_id, episode_no, created_at, updated_at)
@@ -32,15 +35,15 @@ func TestListShowPhotosLatestEpisodesOnly(t *testing.T) {
 		mustExec(`INSERT INTO show_photos (show_id, chat_id, message_id, doc_id, width, height, created_at)
 		          VALUES (1, 1, ?, ?, 720, 1280, 0)`, msgID, docID)
 	}
-	addPhoto(1, 101)
-	addPhoto(2, 199)
+	addPhoto(1, 101) // ep1
+	addPhoto(2, 199) // ep2
 	for i := 0; i < 3; i++ {
-		addPhoto(int64(10+i), 298+i)
+		addPhoto(int64(10+i), 298+i) // ep3
 	}
 	for i := 0; i < 8; i++ {
-		addPhoto(int64(20+i), 401+i)
+		addPhoto(int64(20+i), 401+i) // ep4（应被截到 6 张）
 	}
-	addPhoto(99, 5000)
+	addPhoto(99, 5000) // 频道早期广告图：离所有视频 4600 条
 
 	photos, err := d.ListShowPhotos(1)
 	if err != nil {
@@ -63,6 +66,7 @@ func TestListShowPhotosLatestEpisodesOnly(t *testing.T) {
 		t.Fatalf("按集分布不对：%v", perEp)
 	}
 
+	// 预热只下这几张，不能又把全部图排进下载队列
 	locs, err := d.ListShowPhotoLocs(1)
 	if err != nil {
 		t.Fatalf("list locs: %v", err)
@@ -77,6 +81,7 @@ func TestListShowPhotosLatestEpisodesOnly(t *testing.T) {
 	}
 }
 
+// 图全部判不出归属（视频在别的频道/没同步到）时保持原样，不让预览条凭空消失。
 func TestListShowPhotosKeepsUnattributed(t *testing.T) {
 	d, err := Open(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {

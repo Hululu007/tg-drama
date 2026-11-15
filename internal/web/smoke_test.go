@@ -58,7 +58,7 @@ func TestStaticAndAPI(t *testing.T) {
 		{"/api/history", http.StatusOK, `"list"`},
 		{"/api/favorites", http.StatusOK, `"total"`},
 		{"/api/stream/999", http.StatusNotFound, "视频不存在"},
-
+		// 封面缺失不再 404：发一张占位 SVG（已经落盘缓存），列表里每张卡都有图
 		{"/api/covers/999", http.StatusOK, "<svg"},
 	}
 	for _, c := range cases {

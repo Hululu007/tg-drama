@@ -2,6 +2,8 @@ package parser
 
 import "testing"
 
+// 「第4-5合集 / 1-6合集」这类区间后面跟的是「合集」而不是「集」，
+// 以前范围识别不到，只剩「内群更新至第六集」可匹配，整组相册被记成第 6 集。
 func TestRangeWithCollectionSuffix(t *testing.T) {
 	cases := []struct {
 		caption string
@@ -27,6 +29,8 @@ func TestRangeWithCollectionSuffix(t *testing.T) {
 	}
 }
 
+// caption 只写进度（更新至第5集）时，真实集号应取文件名里的 EP3，
+// 不能把频道进度 5 当成这条视频的集号。
 func TestProgressDoesNotBeatFileName(t *testing.T) {
 	p, err := New().Parse("《剧名》内群更新至第5集", "剧名_EP3.mp4")
 	if err != nil {
@@ -41,6 +45,7 @@ func TestProgressDoesNotBeatFileName(t *testing.T) {
 	}
 }
 
+// 同一相册共享「更新至第N集」的进度 caption 时，每条成员按自己的文件名分集。
 func TestAlbumProgressCaptionUsesFileName(t *testing.T) {
 	p, err := New().Parse("【剧名】完整剧集内群更新至第6集 #剧名", "")
 	if err != nil {

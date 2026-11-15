@@ -5,6 +5,8 @@ import (
 	"strings"
 )
 
+// PendingSource 一条待入库的视频来源：解析结果 + 媒体元信息。
+// Source.EpisodeID 会被批量写入覆盖，调用方无需设置。
 type PendingSource struct {
 	ShowName  string
 	NormName  string
@@ -12,11 +14,13 @@ type PendingSource struct {
 	Tags      []string
 	EpisodeNo int
 	Source    Source
-
+	// Variants 同一条消息里的其它清晰度（Telegram alt_documents）；没有则为空
 	Variants []SourceVariant
 	Raw      RawRecord
 }
 
+// RawRecord 本页一条视频消息的原始内容。正常的会建成 sources 行（caption 写在
+// 那一行上）；被丢弃的才把 info_json 落到 pending_msgs，等同组 caption 到位后复活。
 type RawRecord struct {
 	MessageID int
 	GroupedID int64
@@ -24,12 +28,22 @@ type RawRecord struct {
 	Info      string
 }
 
+// IngestResult 批量入库结果
 type IngestResult struct {
-	Inserted int
-	SourceID []int64
-	NewShows map[string]int64
+	Inserted int              // 新增来源数
+	SourceID []int64          // 与输入 items 一一对应，0 表示该条被忽略
+	NewShows map[string]int64 // 本批新建短剧的 norm → showID（用于异步补封面）
 }
 
+// IngestBatch 在单个事务内写入一页解析结果（剧、集、来源、标签、简介）。
+//
+// 逐条入库时每条消息要 7 次独立提交，实测约 700µs/条；整页一个事务后
+// 降到约 100µs/条，一万条消息的首次同步可省下数秒。
+//
+// 库里只留索引：一条视频消息对应一行 sources，原始 caption 直接写在这一行的
+// caption 列上。只有「相册成员因缺 caption 被丢弃」这种极少数情况才把文档
+// 参数落到 pending_msgs（等相册 caption 到位后复活），不再维护与 sources 等长
+// 的原始消息表。
 func (d *DB) IngestBatch(chatPK int64, items []PendingSource, raws []RawRecord) (*IngestResult, error) {
 	res := &IngestResult{
 		SourceID: make([]int64, len(items)),
@@ -54,7 +68,9 @@ INSERT OR IGNORE INTO sources (
 		return nil, err
 	}
 	defer insSrc.Close()
-
+	// 同一个视频（chat_id + message_id）只允许一条来源。补拉/搜索会反复命中
+	// 已经入库的消息，而 segment_index 是按「该集在该频道已有多少来源」递增的，
+	// 重复入库时反而会算出新段号、插出一条重复来源（选集里同一集两份）。
 	selMsgSrc, err := tx.Prepare(`SELECT id FROM sources WHERE chat_id = ? AND message_id = ? LIMIT 1`)
 	if err != nil {
 		return nil, err
@@ -118,7 +134,8 @@ INSERT OR IGNORE INTO sources (
 		var existSrc int64
 		switch qerr := selMsgSrc.QueryRow(chatPK, it.Source.MessageID).Scan(&existSrc); qerr {
 		case nil:
-
+			// 这条消息已经有来源：保留原记录，不重复插入。
+			// 但这次若拿到了清晰度版本（消息带 alt_documents），顺带补上。
 			res.SourceID[i] = existSrc
 			if len(it.Variants) > 0 {
 				if verr := ReplaceSourceVariants(tx, existSrc, it.Variants); verr != nil {
@@ -150,7 +167,7 @@ INSERT OR IGNORE INTO sources (
 			return nil, ierr
 		}
 		if n, _ := r.RowsAffected(); n == 0 {
-
+			// 唯一键已存在（重复入库）：保留原有来源，不覆盖
 			continue
 		}
 		id, _ := r.LastInsertId()
@@ -160,7 +177,7 @@ INSERT OR IGNORE INTO sources (
 			if verr := ReplaceSourceVariants(tx, id, it.Variants); verr != nil {
 				return nil, verr
 			}
-
+			// 刚看到过这条消息的完整媒体信息：标记已检查，播放页不再重复请求。
 			if _, verr := tx.Exec(`UPDATE sources SET variants_checked = 1 WHERE id = ?`, id); verr != nil {
 				return nil, verr
 			}
@@ -200,6 +217,11 @@ INSERT OR IGNORE INTO sources (
 	return res, nil
 }
 
+// stashPending 处理「因缺 caption 被丢弃」的视频：把定位参数留一份，等同相册的
+// caption 到位后由 rebuild 复活。
+//
+// 只留相册成员（grouped_id != 0）且确实解析失败的那些——独立的垃圾消息没有
+// caption 可等，留下就是死数据。已建成来源的消息顺手清掉旧的待归属记录。
 func stashPending(tx *sql.Tx, chatPK int64, items []PendingSource, raws []RawRecord) error {
 	if len(items) > 0 {
 		ph := strings.TrimSuffix(strings.Repeat("?,", len(items)), ",")
@@ -237,6 +259,7 @@ ON CONFLICT(chat_id, message_id) DO UPDATE SET
 	return nil
 }
 
+// HasPendingMessage 判断消息是否记在待归属索引里（等同组 caption 到位后复活）
 func (d *DB) HasPendingMessage(chatPK int64, messageID int) bool {
 	var n int
 	_ = d.db.QueryRow(`SELECT COUNT(*) FROM pending_msgs WHERE chat_id = ? AND message_id = ?`,
@@ -244,6 +267,9 @@ func (d *DB) HasPendingMessage(chatPK int64, messageID int) bool {
 	return n > 0
 }
 
+// ExistingRawMessages 批量判断消息是否已入库，返回已存在的 message_id 集合。
+// 批量预取替代逐条查询（一页 100 条只需一次查询）。来源与预览图各查一次：
+// 一条纯图片消息只会待在 show_photos 里。
 func (d *DB) ExistingRawMessages(chatPK int64, ids []int) (map[int]bool, error) {
 	out := make(map[int]bool, len(ids))
 	if len(ids) == 0 {
@@ -288,6 +314,9 @@ func (d *DB) ExistingRawMessages(chatPK int64, ids []int) (map[int]bool, error) 
 	return out, nil
 }
 
+// RawMessageTexts 批量返回已入库消息的原始 caption（message_id 到 text），
+// 用于判断一条消息是「已解析过」还是「当初因空 caption 被丢弃、只留了壳」。
+// 返回的键集合 = 已入库消息，值为空串表示当初没拿到 caption。
 func (d *DB) RawMessageTexts(chatPK int64, ids []int) (map[int]string, error) {
 	out := make(map[int]string, len(ids))
 	if len(ids) == 0 {
@@ -335,6 +364,8 @@ func (d *DB) RawMessageTexts(chatPK int64, ids []int) (map[int]string, error) {
 	return out, nil
 }
 
+// GroupSourceMessages 一次查出多个相册（grouped_id）里已入库来源的消息 ID，
+// 供相册集号分配按消息真实顺序取序号（跨页补拉也不能从中间开始编号）。
 func (d *DB) GroupSourceMessages(chatPK int64, groupedIDs []int64) (map[int64][]int, error) {
 	out := make(map[int64][]int, len(groupedIDs))
 	const chunk = 400
@@ -372,6 +403,8 @@ func (d *DB) GroupSourceMessages(chatPK int64, groupedIDs []int64) (map[int64][]
 	return out, nil
 }
 
+// AllShowNorms 返回全库 norm_name → name 映射，供入库时在内存里做 #标签归属，
+// 避免每条消息都去查一次 shows 表。
 func (d *DB) AllShowNorms() (map[string]string, error) {
 	rows, err := d.db.Query(`SELECT norm_name, name FROM shows`)
 	if err != nil {
@@ -389,6 +422,9 @@ func (d *DB) AllShowNorms() (map[string]string, error) {
 	return out, rows.Err()
 }
 
+// AllShowIDs 返回全库 norm_name → id 映射，供相册图片归属时在内存里直接取剧 ID。
+// 图片消息每条都带一次 caption，早先是每条都 UpsertShow 一次（对已存在的剧就是
+// 一次 UPDATE + 一次提交），一页相册几十张图就是几十次写；用内存索引挡住即可。
 func (d *DB) AllShowIDs() (map[string]int64, error) {
 	rows, err := d.db.Query(`SELECT norm_name, id FROM shows`)
 	if err != nil {

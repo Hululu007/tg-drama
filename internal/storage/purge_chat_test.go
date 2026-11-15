@@ -6,6 +6,8 @@ import (
 	"testing"
 )
 
+// PurgeChatData 删除某个频道的全部数据，但不能误删别的频道也在用的剧集：
+// 同一条视频常被多个频道转发，只有一条来源都不剩时才删那一集。
 func TestPurgeChatDataKeepsSharedEpisodes(t *testing.T) {
 	d, err := Open(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
@@ -21,12 +23,14 @@ func TestPurgeChatDataKeepsSharedEpisodes(t *testing.T) {
 	mustExec(`INSERT INTO chats (id, tg_chat_id, name, enabled, created_at) VALUES (1, 101, '要删的频道', 1, 0)`)
 	mustExec(`INSERT INTO chats (id, tg_chat_id, name, enabled, created_at) VALUES (2, 102, '保留的频道', 1, 0)`)
 
+	// show 1：两个频道都转发了第 1 集 → 清理频道 1 后这一集和这部剧都要留下
 	mustExec(`INSERT INTO shows (id, name, norm_name, created_at, updated_at) VALUES (1, '共享剧', '共享剧', 0, 0)`)
 	mustExec(`INSERT INTO episodes (id, show_id, episode_no, created_at, updated_at) VALUES (1, 1, 1, 0, 0)`)
 	mustExec(`INSERT INTO sources (id, episode_id, chat_id, message_id, created_at) VALUES (1, 1, 1, 10, 0)`)
 	mustExec(`INSERT INTO sources (id, episode_id, chat_id, message_id, created_at) VALUES (2, 1, 2, 20, 0)`)
 	mustExec(`INSERT INTO show_photos (show_id, chat_id, message_id, doc_id, created_at) VALUES (1, 1, 11, 1001, 0)`)
 
+	// show 2：只有频道 1 的来源 → 清理后这一集、这部剧、收藏、观看记录都该消失
 	mustExec(`INSERT INTO shows (id, name, norm_name, created_at, updated_at) VALUES (2, '独有剧', '独有剧', 0, 0)`)
 	mustExec(`INSERT INTO episodes (id, show_id, episode_no, created_at, updated_at) VALUES (2, 2, 1, 0, 0)`)
 	mustExec(`INSERT INTO sources (id, episode_id, chat_id, message_id, created_at) VALUES (3, 2, 1, 12, 0)`)
@@ -74,12 +78,13 @@ func TestPurgeChatDataKeepsSharedEpisodes(t *testing.T) {
 	if n := count(`SELECT COUNT(*) FROM favorites WHERE show_id = 2`); n != 0 {
 		t.Fatalf("删除剧时收藏应级联删除")
 	}
-
+	// 频道行本身保留，面板里还能看到并重新启用
 	if n := count(`SELECT COUNT(*) FROM chats WHERE tg_chat_id = 101`); n != 1 {
 		t.Fatalf("频道行不该被删")
 	}
 }
 
+// DeleteChat 用于「频道已经退出 Telegram」：连频道行一起删。
 func TestDeleteChatRemovesRow(t *testing.T) {
 	d, err := Open(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
@@ -104,6 +109,8 @@ func TestDeleteChatRemovesRow(t *testing.T) {
 	}
 }
 
+// 清理频道只删数据库目录下的缓存文件：副本库（调试用）可能带着指向正式库的
+// 绝对路径，直接删会把正式库的封面/预览图删掉。
 func TestPurgeChatDataRemovesOnlyFilesUnderDataDir(t *testing.T) {
 	root := t.TempDir()
 	dataDir := filepath.Join(root, "data")

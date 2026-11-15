@@ -25,6 +25,7 @@ func (s *Service) handleNewChannelMessage(ctx context.Context, e tg.Entities, up
 	return s.handleRealTimeMessage(ctx, msg, e)
 }
 
+// handleRealTimeMessage 新消息实时入库，持续更新
 func (s *Service) handleRealTimeMessage(ctx context.Context, msg *tg.Message, e tg.Entities) error {
 	pc, ok := msg.PeerID.(*tg.PeerChannel)
 	if !ok {
@@ -65,7 +66,7 @@ func (s *Service) handleRealTimeMessage(ctx context.Context, msg *tg.Message, e 
 	if err := s.ingestMessage(ctx, chat, msg, ""); err != nil {
 		return err
 	}
-
+	// 实时消息也要推进最新游标，避免下次启动重复补拉
 	_ = s.db.UpdateChatTopMsg(chat.TgChatID, int64(msg.ID))
 	return nil
 }

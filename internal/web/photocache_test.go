@@ -13,6 +13,7 @@ import (
 	"tgdrama/internal/tgclient"
 )
 
+// newTestEnv 建一套带真实数据目录的测试环境（预览图目录由 cfg.EnsureDirs 创建）
 func newTestEnv(t testing.TB) (*Server, *storage.DB, *config.Config) {
 	t.Helper()
 	dir := t.TempDir()
@@ -36,6 +37,8 @@ func newTestEnv(t testing.TB) (*Server, *storage.DB, *config.Config) {
 	return srv, store, cfg
 }
 
+// 清预览图缓存：只删 photos 目录、只清预览图记录，接口能报出释放的体积，
+// 之后访问这张图仍然返回 200（占位图），不是 404。
 func TestClearPhotosCache(t *testing.T) {
 	srv, store, cfg := newTestEnv(t)
 	h := srv.Handler()
@@ -59,6 +62,7 @@ func TestClearPhotosCache(t *testing.T) {
 	}
 	photoID := photos[0].ID
 
+	// 占用统计能看到这张图
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/cache/usage", nil))
 	var usage map[string]any
@@ -72,6 +76,7 @@ func TestClearPhotosCache(t *testing.T) {
 		t.Fatalf("photos_files = %d，期望 1", n)
 	}
 
+	// 清理
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/cache/clear?kind=photos", nil))
 	if rec.Code != http.StatusOK {
@@ -95,6 +100,7 @@ func TestClearPhotosCache(t *testing.T) {
 		t.Fatalf("cache_path 应被清空，实际 = %q", path)
 	}
 
+	// 清完之后访问图片：仍然 200 + 占位图，不会变成破图/404
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/photos/"+itoa(photoID), nil))
 	if rec.Code != http.StatusOK {
@@ -104,6 +110,7 @@ func TestClearPhotosCache(t *testing.T) {
 		t.Fatal("清缓存后应返回占位图")
 	}
 
+	// 记录仍然保留（自动重下的依据），不会因为清缓存丢条目
 	photos, err = store.ListShowPhotos(showID)
 	if err != nil || len(photos) != 1 {
 		t.Fatalf("清缓存后记录应保留，实际 %d 条, err=%v", len(photos), err)

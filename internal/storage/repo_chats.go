@@ -16,6 +16,8 @@ type rowScanner interface {
 	Scan(dest ...any) error
 }
 
+// UpsertChat 插入或更新频道信息，返回内部主键。
+// 插入时按 c.Enabled 决定是否采集；已存在的频道不覆盖 enabled（保留手动开关）。
 func (d *DB) UpsertChat(c *Chat) (int64, error) {
 	enabled := 0
 	if c.Enabled {
@@ -40,6 +42,7 @@ ON CONFLICT(tg_chat_id) DO UPDATE SET
 	return got.ID, nil
 }
 
+// GetChatByTgID 按 Telegram 频道 ID 查询
 func (d *DB) GetChatByTgID(tgID int64) (*Chat, error) {
 	row := d.db.QueryRow(`
 SELECT id, tg_chat_id, access_hash, name, username, type, enabled, last_offset_id, last_top_id, synced_at, created_at
@@ -47,6 +50,7 @@ FROM chats WHERE tg_chat_id = ?`, tgID)
 	return scanChat(row)
 }
 
+// GetChat 按内部主键查询
 func (d *DB) GetChat(id int64) (*Chat, error) {
 	row := d.db.QueryRow(`
 SELECT id, tg_chat_id, access_hash, name, username, type, enabled, last_offset_id, last_top_id, synced_at, created_at
@@ -65,6 +69,7 @@ func scanChat(r rowScanner) (*Chat, error) {
 	return &c, nil
 }
 
+// ListChats 全部频道
 func (d *DB) ListChats() ([]*Chat, error) {
 	rows, err := d.db.Query(`
 SELECT id, tg_chat_id, access_hash, name, username, type, enabled, last_offset_id, last_top_id, synced_at, created_at
@@ -84,6 +89,7 @@ FROM chats ORDER BY id`)
 	return out, nil
 }
 
+// ChatStat 频道管理面板用的频道信息：带原始消息数与来源数
 type ChatStat struct {
 	ID           int64  `json:"id"`
 	TgChatID     int64  `json:"tg_chat_id"`
@@ -96,9 +102,10 @@ type ChatStat struct {
 	LastOffset   int64  `json:"last_offset"`
 	LastTopID    int64  `json:"last_top_id"`
 	SyncedAt     int64  `json:"synced_at"`
-	Syncing      bool   `json:"syncing"`
+	Syncing      bool   `json:"syncing"` // 仅接口返回时填充：是否正在后台同步
 }
 
+// ListChatStats 全部频道 + 每个频道已入库的消息数/来源数，按「已启用优先、来源多的优先」排序
 func (d *DB) ListChatStats() ([]ChatStat, error) {
 	rows, err := d.db.Query(`
 SELECT c.id, c.tg_chat_id, COALESCE(c.name, ''), COALESCE(c.username, ''), COALESCE(c.type, ''),
@@ -128,6 +135,7 @@ ORDER BY c.enabled DESC,
 	return out, rows.Err()
 }
 
+// ListEnabledChats 已启用的频道
 func (d *DB) ListEnabledChats() ([]*Chat, error) {
 	rows, err := d.db.Query(`
 SELECT id, tg_chat_id, access_hash, name, username, type, enabled, last_offset_id, last_top_id, synced_at, created_at
@@ -147,6 +155,7 @@ FROM chats WHERE enabled = 1 ORDER BY id`)
 	return out, nil
 }
 
+// SetChatEnabled 启用/停用频道采集
 func (d *DB) SetChatEnabled(tgID int64, enabled bool) error {
 	v := 0
 	if enabled {
@@ -163,12 +172,14 @@ func (d *DB) SetChatEnabled(tgID int64, enabled bool) error {
 	return nil
 }
 
+// UpdateChatSyncPoint 更新历史同步断点
 func (d *DB) UpdateChatSyncPoint(tgID int64, lastOffset int64) error {
 	_, err := d.db.Exec(`UPDATE chats SET last_offset_id = ?, synced_at = ? WHERE tg_chat_id = ?`,
 		lastOffset, nowUnix(), tgID)
 	return err
 }
 
+// UpdateChatTopMsg 记录频道已同步到的最新消息 ID，只增不减
 func (d *DB) UpdateChatTopMsg(tgID int64, topID int64) error {
 	if topID <= 0 {
 		return nil
@@ -178,6 +189,7 @@ func (d *DB) UpdateChatTopMsg(tgID int64, topID int64) error {
 	return err
 }
 
+// PurgeStats 清理一个频道后的删除统计，接口直接回给前端展示
 type PurgeStats struct {
 	Sources  int `json:"sources"`
 	Episodes int `json:"episodes"`
@@ -186,6 +198,10 @@ type PurgeStats struct {
 	Files    int `json:"files"`
 }
 
+// PurgeChatData 删除某个频道已入库的全部数据：视频来源、预览图、因此失去全部
+// 来源的剧集，以及失去全部剧集和预览图的剧，顺带清掉对应的本地缓存文件。
+// 频道行本身保留（enabled 由调用方改），面板里还能看到并重新启用。
+// 同一部剧/同一集可能被多个频道转发共用：只要还有别的来源就不删。
 func (d *DB) PurgeChatData(tgID int64) (PurgeStats, error) {
 	var st PurgeStats
 	var chatPK int64
@@ -201,6 +217,7 @@ func (d *DB) PurgeChatData(tgID int64) (PurgeStats, error) {
 	}
 	defer tx.Rollback()
 
+	// 先收集要删的本地文件：视频与预览图，提交后再落盘删除，避免事务回滚后文件没了
 	var files []string
 	for _, q := range []string{
 		`SELECT file_path FROM sources WHERE chat_id = ? AND file_path <> ''`,
@@ -247,6 +264,7 @@ SELECT 1 FROM sources s WHERE s.episode_id = episodes.id)`); err != nil {
 		return st, err
 	}
 
+	// 没有剧集也没有预览图的剧整部删掉；show_tags 没有级联，必须先删
 	coverRows, err := tx.Query(`SELECT id, cover_path FROM shows WHERE NOT EXISTS (
 SELECT 1 FROM episodes e WHERE e.show_id = shows.id)
 AND NOT EXISTS (SELECT 1 FROM show_photos p WHERE p.show_id = shows.id)`)
@@ -297,6 +315,8 @@ AND NOT EXISTS (SELECT 1 FROM show_photos p WHERE p.show_id = shows.id)`)
 	return st, nil
 }
 
+// removeCachedFile 只删数据库目录下的缓存文件：调试用的副本库可能带着指向
+// 正式库的绝对路径，直接 os.Remove 会把正式库的封面/预览图删掉。
 func (d *DB) removeCachedFile(p string) bool {
 	base := d.baseDir + string(os.PathSeparator)
 	for _, cand := range []string{p, filepath.Join(d.baseDir, p)} {
@@ -311,12 +331,16 @@ func (d *DB) removeCachedFile(p string) bool {
 	return false
 }
 
+// Vacuum 回收已删除行占用的磁盘空间。SQLite 删行只把页标记为空闲，库文件不会
+// 变小；停用/退出频道清掉大量来源后调一次，才能真正省出空间。
+// 有同步在写时可能拿不到锁，失败忽略即可（下次重启会再试）。
 func (d *DB) Vacuum() {
 	if _, err := d.db.Exec(`VACUUM`); err != nil {
 		log.Printf("VACUUM 跳过：%v", err)
 	}
 }
 
+// DeleteChat 频道已不在账号的对话列表里：删掉它的入库数据和频道行本身。
 func (d *DB) DeleteChat(tgID int64) (PurgeStats, error) {
 	st, err := d.PurgeChatData(tgID)
 	if err != nil {
@@ -326,6 +350,9 @@ func (d *DB) DeleteChat(tgID int64) (PurgeStats, error) {
 	return st, err
 }
 
+// GetGroupCaption 返回同一相册（grouped_id）中任一非空 caption。
+// 相册 caption 只挂在一条消息上，其余成员入库时靠它补齐分集信息。
+// 文案现在存在来源行／预览图行上，两张表都查一遍。
 func (d *DB) GetGroupCaption(chatPK, groupedID int64) (string, error) {
 	var text string
 	err := d.db.QueryRow(`
@@ -348,6 +375,7 @@ ORDER BY message_id LIMIT 1`, chatPK, groupedID).Scan(&text)
 	return text, err
 }
 
+// GetKV 读取键值，不存在返回空串和 false
 func (d *DB) GetKV(k string) (string, bool, error) {
 	var v string
 	err := d.db.QueryRow(`SELECT v FROM kv WHERE k = ?`, k).Scan(&v)
@@ -360,6 +388,7 @@ func (d *DB) GetKV(k string) (string, bool, error) {
 	return v, true, nil
 }
 
+// SetKV 写入键值
 func (d *DB) SetKV(k, v string) error {
 	_, err := d.db.Exec(`
 INSERT INTO kv (k, v) VALUES (?, ?)

@@ -10,6 +10,7 @@ import (
 	"tgdrama/internal/parser"
 )
 
+// MergeShowResult 一次「合并重复短剧」的结果，仅用于离线工具输出。
 type MergeShowResult struct {
 	Backup           string `json:"backup"`
 	FromShowID       int64  `json:"from_show_id"`
@@ -25,6 +26,16 @@ type MergeShowResult struct {
 	CoverTransferred bool   `json:"cover_transferred"`
 }
 
+// MergeShowInto 把 fromID 合并进 toID：只搬来源/剧集/图片/标签/收藏/观看记录，
+// 保留双方已有的 ID；fromID 剧行最后删除，toID 的 ID 与名称不变。
+//
+// 与 RebuildFromRaw / MergeDuplicateShows 不同，这里不做整库重解析：
+//   - 单事务，任何冲突（同集两边都有观看记录、来源唯一键冲突、名称不相关）整体回滚；
+//   - 写前先用独立只读连接做含 WAL 的一致性备份，备份失败不写库；
+//   - 不修改任何 episode_no，不改 toID 的名称与隐藏状态；
+//   - 重复执行会因 fromID 已不存在而报错，不会二次改动。
+//
+// 只应在离线（服务未写入）时调用；调用方必须显式给出 from/to 与备份路径。
 func MergeShowInto(ctx context.Context, path string, fromID, toID int64, backupPath string) (*MergeShowResult, error) {
 	result := &MergeShowResult{FromShowID: fromID, ToShowID: toID}
 	if fromID <= 0 || toID <= 0 || fromID == toID {
@@ -42,7 +53,7 @@ func MergeShowInto(ctx context.Context, path string, fromID, toID int64, backupP
 		return result, err
 	}
 	defer db.Close()
-	tx, err := db.BeginTx(ctx, nil)
+	tx, err := db.BeginTx(ctx, nil) // _txlock=immediate：合并期间不允许其他写入
 	if err != nil {
 		return result, err
 	}
@@ -64,7 +75,7 @@ func MergeShowInto(ctx context.Context, path string, fromID, toID int64, backupP
 		}
 		return result, err
 	}
-
+	// 只允许合并「名字互相包含」的剧，避免误把两部无关的剧并到一起。
 	fn, tn := parser.Normalize(fromName), parser.Normalize(toName)
 	if fn == "" || tn == "" || (!strings.Contains(fn, tn) && !strings.Contains(tn, fn)) {
 		return result, fmt.Errorf("refuse merge: show names %q and %q are unrelated", fromName, toName)
@@ -111,6 +122,7 @@ func MergeShowInto(ctx context.Context, path string, fromID, toID int64, backupP
 		return result, err
 	}
 
+	// 预检：来源唯一键 (chat_id,message_id,segment_index) 在两边重复时无法搬移。
 	for _, e := range fromEps {
 		target, ok := toEps[e.no]
 		if !ok {
@@ -127,7 +139,7 @@ WHERE a.episode_id=? AND b.episode_id=?`, e.id, target).Scan(&dup); err != nil {
 			return result, fmt.Errorf("refuse merge: episode %d has sources that already exist in episode %d", e.id, target)
 		}
 	}
-
+	// 预检：同一集两边都有观看记录时无法判断保留哪条，整体拒绝。
 	for _, e := range fromEps {
 		target, ok := toEps[e.no]
 		if !ok {
@@ -145,6 +157,7 @@ WHERE a.episode_id=? AND b.episode_id=?`, e.id, target).Scan(&dup); err != nil {
 		}
 	}
 
+	// 备份与改名工具同一套保证：先备份成功，再写库。
 	backup, err := backupNameDatabase(ctx, abs, backupPath)
 	if err != nil {
 		return result, err
@@ -178,6 +191,7 @@ WHERE a.episode_id=? AND b.episode_id=?`, e.id, target).Scan(&dup); err != nil {
 		result.MergedEpisodes++
 	}
 
+	// 图片：唯一键是 doc_id，两边不会重复；仍用 OR IGNORE 兜底，冲突的留在原剧随后删除。
 	if r, err := tx.ExecContext(ctx, `UPDATE OR IGNORE show_photos SET show_id=? WHERE show_id=?`, toID, fromID); err != nil {
 		return result, err
 	} else if n, _ := r.RowsAffected(); n > 0 {
@@ -219,6 +233,7 @@ SELECT ?, tag_id FROM show_tags WHERE show_id=?`, toID, fromID); err != nil {
 		result.CoverTransferred = true
 	}
 
+	// 删除前确认原剧已无任何引用，避免把孤儿数据留在库里。
 	var refs int
 	if err := tx.QueryRowContext(ctx, `
 SELECT (SELECT COUNT(*) FROM episodes WHERE show_id=?) +

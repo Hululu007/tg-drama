@@ -17,7 +17,7 @@ import (
 
 func nameRepairFixture(t *testing.T, ddl string) (string, *sql.DB) {
 	t.Helper()
-
+	// Special URI characters must be treated as part of the path, not options.
 	path := filepath.Join(t.TempDir(), "names # evidence.db")
 	db, err := sql.Open("sqlite", filepath.ToSlash(path))
 	if err != nil {
@@ -85,6 +85,8 @@ func nameRepairStatus(t *testing.T, p *NameAuditPlan, id int64, status string) N
 	return c
 }
 
+// Compare every column in every application table (including credentials/cache
+// sentinel fields), excluding only the two fields this command may update.
 func nameRepairState(t *testing.T, db *sql.DB) map[string]string {
 	t.Helper()
 	tables := []string{"chats", "shows", "episodes", "sources", "tags", "show_tags", "show_photos", "kv", "pending_msgs", "history", "favorites", "sqlite_sequence"}
@@ -191,7 +193,7 @@ func TestNameRepairUnsupportedSchemas(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-
+			// The renamed table case cannot retain the index on shows.
 			ddl := strings.Replace(tc.ddl, "CREATE INDEX IF NOT EXISTS idx_shows_updated    ON shows (updated_at);", "", 1)
 			path, _ := nameRepairFixture(t, ddl)
 			_, err := AuditNames(context.Background(), path)
@@ -324,6 +326,7 @@ func TestNameRepairWhitespaceOnlyIsReview(t *testing.T) {
 	}
 }
 
+// 不同来源标题只有空格差异、当前名已等于解析结果时，不应产生“无操作”候选。
 func TestNameRepairNoopCandidateOmitted(t *testing.T) {
 	path, db := nameRepairFixture(t, "")
 	nameRepairSeed(t, db, 1, "大吊姐驾到 统统闪开", "", "大吊姐驾到 统统闪开 第2集.mp4")
@@ -425,7 +428,7 @@ func TestNameRepairSelectionAndMixedStaleSkips(t *testing.T) {
 }
 
 func TestNameRepairRollbackWholeBatch(t *testing.T) {
-
+	// A real SQLite CHECK fails on the second update, after the first succeeded.
 	ddl := strings.Replace(schemaSQL, "name        TEXT NOT NULL,", "name        TEXT NOT NULL CHECK (name <> '远山来信'),", 1)
 	path, db := nameRepairFixture(t, ddl)
 	nameRepairSeed(t, db, 1, "长夜微光 第2集", "《长夜微光》第2集", "长夜微光 第2集.mp4")

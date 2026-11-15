@@ -1,3 +1,5 @@
+// nameaudit is an offline, opt-in name-only maintenance command. It does not
+// load service configuration, Telegram credentials, sessions, or network code.
 package main
 
 import (

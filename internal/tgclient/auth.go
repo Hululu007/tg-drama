@@ -14,13 +14,19 @@ import (
 	"github.com/gotd/td/tgerr"
 )
 
+// 登录方式常量。
+// PC 端优先扫码（手机扫屏幕最省事）；移动端优先「账号登录」——手机上没法从相册
+// 选取二维码给 Telegram 扫，只能输入手机号 + 验证码。
 const (
 	ModeQR    = "qr"
 	ModePhone = "phone"
 
+	// kvAuthMode 记住上次选择的登录方式：进程重启（如 Android 端被杀）后
+	// 仍按用户偏好等待手机号，而不是又生成一个没人扫的二维码。
 	kvAuthMode = "auth_mode"
 )
 
+// LoginMode 返回当前偏好的登录方式
 func (s *Service) LoginMode() string {
 	s.authMu.Lock()
 	defer s.authMu.Unlock()
@@ -30,6 +36,8 @@ func (s *Service) LoginMode() string {
 	return ModeQR
 }
 
+// SetLoginMode 切换登录方式。未登录且正在等另一种方式时，立即取消当前流程，
+// authLoop 会用新的方式重新开始（不会触发断线重连）。
 func (s *Service) SetLoginMode(mode string) error {
 	mode = strings.ToLower(strings.TrimSpace(mode))
 	if mode != ModeQR && mode != ModePhone {
@@ -40,10 +48,10 @@ func (s *Service) SetLoginMode(mode string) error {
 	s.loginMode = mode
 	cancel := s.authCancel
 	if changed {
-
+		// 切换方式后旧的错误提示没有意义，避免界面残留上一种方式的报错
 		s.message = ""
 		if mode == ModePhone {
-
+			// 账号登录不需要二维码，清掉旧 token 防止前端误显示
 			s.qrToken = qrlogin.Token{}
 		}
 	}
@@ -57,6 +65,7 @@ func (s *Service) SetLoginMode(mode string) error {
 	return nil
 }
 
+// restoreLoginMode 启动时恢复上次选择的登录方式（读不到就保持默认扫码）
 func (s *Service) restoreLoginMode() {
 	if s.db == nil {
 		return
@@ -68,6 +77,7 @@ func (s *Service) restoreLoginMode() {
 	}
 }
 
+// setAuthCancel 记录当前登录流程的取消函数（断线重连时用于取消等待输入的流程）
 func (s *Service) setAuthCancel(cancel context.CancelFunc) {
 	s.authMu.Lock()
 	s.authCancel = cancel
@@ -80,6 +90,7 @@ func (s *Service) clearAuthCancel() {
 	s.authMu.Unlock()
 }
 
+// setPhaseMessage 同时更新阶段与提示文案（用于「停留在当前步骤并说明原因」）
 func (s *Service) setPhaseMessage(p, msg string) {
 	s.authMu.Lock()
 	s.phase = p
@@ -87,18 +98,22 @@ func (s *Service) setPhaseMessage(p, msg string) {
 	s.authMu.Unlock()
 }
 
+// setNotice 记录一条持续显示的提示（例如「上一会话被注销」）。它不会像
+// message 那样被阶段切换清掉，登录成功后由 setPhase(phaseAuthorized) 复位。
 func (s *Service) setNotice(msg string) {
 	s.authMu.Lock()
 	s.notice = msg
 	s.authMu.Unlock()
 }
 
+// setToken 记录当前二维码登录 token（过期时 qr.Auth 会自动重新导出并再次回调）
 func (s *Service) setToken(t qrlogin.Token) {
 	s.authMu.Lock()
 	s.qrToken = t
 	s.authMu.Unlock()
 }
 
+// QRInfo 返回二维码登录 URL 与过期时间
 func (s *Service) QRInfo() (loginURL string, expires time.Time, ok bool) {
 	s.authMu.Lock()
 	defer s.authMu.Unlock()
@@ -108,6 +123,7 @@ func (s *Service) QRInfo() (loginURL string, expires time.Time, ok bool) {
 	return s.qrToken.URL(), s.qrToken.Expires(), true
 }
 
+// authLoop 按当前偏好的方式执行登录；用户中途切换方式时换一种继续。
 func (s *Service) authLoop(ctx context.Context, api *tg.Client) error {
 	for {
 		mode := s.LoginMode()
@@ -134,7 +150,7 @@ func (s *Service) authLoop(ctx context.Context, api *tg.Client) error {
 			return ctx.Err()
 		}
 		if actx.Err() != nil {
-
+			// 当前流程是被 SetLoginMode 取消的，换一种方式重来
 			log.Printf("登录方式已切换为 %s，重新开始登录", s.LoginMode())
 			continue
 		}
@@ -142,6 +158,12 @@ func (s *Service) authLoop(ctx context.Context, api *tg.Client) error {
 	}
 }
 
+// qrLoginFlow 执行扫码登录：导出二维码 token，等手机端确认后导入授权，支持 2FA。
+// 注意 qrlogin.QR.Accept 是「已登录手机端」确认 token 用的接口，未登录客户端调用
+// 会返回 401 AUTH_KEY_UNREGISTERED；新客户端必须走 QR.Auth（等待 updateLoginToken）。
+//
+// 登录过程中的任何失败（DC 迁移、网络抖动、凭证限流等）都不终止客户端：
+// 记录原因后短暂等待，重新生成二维码继续等待扫码，直到登录成功或 ctx 取消。
 func (s *Service) qrLoginFlow(ctx context.Context, api *tg.Client) error {
 	qr := qrlogin.NewQR(api, s.apiID, s.apiHash, qrlogin.Options{
 		Migrate: func(ctx context.Context, dcID int) error {
@@ -159,7 +181,9 @@ func (s *Service) qrLoginFlow(ctx context.Context, api *tg.Client) error {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-
+		// 手机上点「确认登录」那一两秒里二维码刚好到期，导入授权就会失败。
+		// 这是扫码登录的正常竞态，不是故障：立刻换一张新码继续等用户扫，
+		// 绝不能把 "400 AUTH_TOKEN_EXPIRED" 这类原始 RPC 文案怼到登录层上。
 		if isStaleTokenErr(err) {
 			log.Printf("扫码确认时二维码已过期（%v），立即换一张继续等待扫码", err)
 			s.setPhaseMessage(phaseWaitingQR, "二维码已过期，已自动换上新的码，请再扫一次")
@@ -179,6 +203,8 @@ func (s *Service) qrLoginFlow(ctx context.Context, api *tg.Client) error {
 	}
 }
 
+// staleTokenCodes 是「扫码确认阶段 token 过期/失效」这类可自愈的错误码。
+// 遇到它们换一张二维码就行，不需要把状态打成 error 让用户看到报错横幅。
 var staleTokenCodes = []string{
 	"AUTH_TOKEN_EXPIRED",
 	"AUTH_TOKEN_INVALID",
@@ -193,9 +219,10 @@ func isStaleTokenErr(err error) bool {
 	return false
 }
 
+// qrAuthOnce 完成一轮「生成二维码 → 等待扫码确认 → 导入授权」，支持 2FA。
 func (s *Service) qrAuthOnce(ctx context.Context, qr qrlogin.QR) error {
 	_, err := qr.Auth(ctx, s.loggedIn, func(_ context.Context, token qrlogin.Token) error {
-		s.setToken(token)
+		s.setToken(token) // 二维码过期时 Auth 会自动重新导出并再次回调
 		s.setPhase(phaseWaitingQR)
 		log.Printf("登录二维码已生成，有效期至 %s", token.Expires().Format("15:04:05"))
 		return nil
@@ -206,7 +233,7 @@ func (s *Service) qrAuthOnce(ctx context.Context, qr qrlogin.QR) error {
 		return nil
 	}
 	if ctx.Err() != nil {
-
+		// 用户切换了登录方式，这里是被主动取消的，不必当成异常记录
 		return ctx.Err()
 	}
 	log.Printf("二维码登录流程异常: %v", err)
@@ -214,7 +241,8 @@ func (s *Service) qrAuthOnce(ctx context.Context, qr qrlogin.QR) error {
 	if tgerr.Is(err, "SESSION_PASSWORD_NEEDED") {
 		return s.finishWithPassword(ctx)
 	}
-
+	// Telegram 要求先迁移到账号所在 DC 才能继续导出/导入登录 token
+	// （qr.Auth 的 Export 阶段不会自动迁移，需要调用方处理）
 	var mig *qrlogin.MigrationNeededError
 	if errors.As(err, &mig) {
 		log.Printf("Telegram 要求迁移到 DC%d，正在迁移…", mig.MigrateTo.DCID)
@@ -225,6 +253,9 @@ func (s *Service) qrAuthOnce(ctx context.Context, qr qrlogin.QR) error {
 	return err
 }
 
+// phoneLoginFlow 手机号 + 验证码登录（可选两步验证）。
+// 错误尽量在流程内部消化：验证码输错只是重新等输入，不会把客户端打回重连，
+// 否则用户每错一次都要重连一次 Telegram。
 func (s *Service) phoneLoginFlow(ctx context.Context) error {
 	for {
 		phone, err := s.waitPhone(ctx)
@@ -246,7 +277,7 @@ func (s *Service) phoneLoginFlow(ctx context.Context) error {
 		case *tg.AuthSentCode:
 			hash = v.PhoneCodeHash
 		case *tg.AuthSentCodeSuccess:
-
+			// 服务端直接判定已授权（极少见），按成功处理
 			log.Printf("Telegram 登录成功（免验证码）")
 			s.setPhase(phaseAuthorized)
 			return nil
@@ -261,6 +292,7 @@ func (s *Service) phoneLoginFlow(ctx context.Context) error {
 		log.Printf("验证码已发送到 %s", maskPhone(phone))
 		s.setPhaseMessage(phaseNeedCode, "验证码已发送，请查看 Telegram 官方账号消息")
 
+		// 验证码重试：输错只重新等待，过期/手机号变更才回到上一步
 		resend := false
 		for !resend {
 			code, err := s.waitCode(ctx)
@@ -299,6 +331,7 @@ func (s *Service) phoneLoginFlow(ctx context.Context) error {
 	}
 }
 
+// loginWithPassword 两步验证：等 Web 端提交密码，错了继续等，不会中断整个客户端。
 func (s *Service) loginWithPassword(ctx context.Context) error {
 	for {
 		s.setPhase(phaseNeedPassword)
@@ -322,6 +355,8 @@ func (s *Service) loginWithPassword(ctx context.Context) error {
 	}
 }
 
+// SubmitPhone 提交手机号（账号登录第一步）。
+// 客户端可能还没连上 Telegram，这里只把号码放进缓冲通道，等流程启动后消费。
 func (s *Service) SubmitPhone(phone string) error {
 	phone = normalizePhone(phone)
 	if phone == "" {
@@ -333,7 +368,10 @@ func (s *Service) SubmitPhone(phone string) error {
 	if s.IsAuthorized() {
 		return errors.New("已经登录，无需再次操作")
 	}
-
+	// 切到账号登录：必须走 SetLoginMode，它会取消正在跑的扫码流程，
+	// authLoop 随即以账号登录重来并消费下面塞进通道的手机号。
+	// （只改 loginMode 字段不取消的话，二维码流程会一直占着登录循环，
+	//   手机号躺在通道里没人读，用户永远等不到验证码。）
 	if s.LoginMode() != ModePhone {
 		if err := s.SetLoginMode(ModePhone); err != nil {
 			return err
@@ -344,7 +382,7 @@ func (s *Service) SubmitPhone(phone string) error {
 		return nil
 	default:
 	}
-
+	// 缓冲区里已有旧号码：丢掉换成最新的
 	select {
 	case <-s.phoneChan:
 	default:
@@ -357,6 +395,7 @@ func (s *Service) SubmitPhone(phone string) error {
 	}
 }
 
+// SubmitCode 提交收到的登录验证码
 func (s *Service) SubmitCode(code string) error {
 	code = strings.NewReplacer(" ", "", "-", "", "\t", "").Replace(strings.TrimSpace(code))
 	if code == "" {
@@ -400,6 +439,7 @@ func (s *Service) waitCode(ctx context.Context) (string, error) {
 	}
 }
 
+// normalizePhone 去掉用户从通讯录/网页复制来的空格与分隔符，统一成 +国家码形式。
 func normalizePhone(raw string) string {
 	p := strings.NewReplacer(" ", "", "\t", "", "\n", "", "-", "", "(", "", ")", "", "（", "", "）", "").Replace(strings.TrimSpace(raw))
 	if p == "" {
@@ -411,6 +451,7 @@ func normalizePhone(raw string) string {
 	return p
 }
 
+// maskPhone 日志里只保留国家码与后四位，避免完整手机号落盘
 func maskPhone(p string) string {
 	if len(p) <= 6 {
 		return p
@@ -418,6 +459,7 @@ func maskPhone(p string) string {
 	return p[:len(p)-8] + "****" + p[len(p)-4:]
 }
 
+// validPhone 只接受国际格式（+ 国家码 + 号码），避免把本地号码直接发给 Telegram
 func validPhone(p string) bool {
 	if len(p) < 7 || len(p) > 21 || p[0] != '+' {
 		return false
@@ -430,6 +472,7 @@ func validPhone(p string) bool {
 	return true
 }
 
+// describeAuthErr 把 Telegram 的 RPC 错误翻译成用户能看懂的提示
 func describeAuthErr(err error) string {
 	if d, ok := tgerr.AsFloodWait(err); ok {
 		sec := int(d.Seconds())
@@ -457,6 +500,7 @@ func describeAuthErr(err error) string {
 	return err.Error()
 }
 
+// finishWithPassword 处理两步验证：等待 Web 端提交密码完成登录
 func (s *Service) finishWithPassword(ctx context.Context) error {
 	s.setPhase(phaseNeedPassword)
 	pw, perr := s.waitPassword(ctx)
@@ -486,6 +530,7 @@ func (s *Service) waitPassword(ctx context.Context) (string, error) {
 	}
 }
 
+// SubmitPassword Web 端提交两步验证密码
 func (s *Service) SubmitPassword(pw string) error {
 	s.authMu.Lock()
 	ch := s.pwChan

@@ -1,14 +1,33 @@
+# Telegram 短剧媒体库配置
 telegram:
+  # Telegram 应用凭证（my.telegram.org → API development tools 申请）。
+  # 不填时使用内置默认凭证（Telegram Desktop 官方应用）：官方凭证登录时验证码
+  # 走 Telegram App 内服务消息投递；自有凭证只能走短信，国内手机号经常收不到。
+  # 多套部署共用同一凭证可能触发限流（API_ID_PUBLISHED_FLOOD），被限时可换自己的。
+  # api_id: 2040
+  # api_hash: "b18441a1ff607e10a989891a5462e627"
+  # 代理地址，支持 socks5:// 或 http://，家里网络直连 TG 失败时填写；不需要代理则留空
   proxy: "socks5://127.0.0.1:7890"
+  # 主连接传输方式：
+  #   auto（默认）优先 wss://*.web.telegram.org/apiws，失败回退 DC IP 直连；
+  #   tcp 优先 DC IP 直连——配了代理时推荐：握手不带浏览器指纹，与上报的
+  #       设备信息一致，不容易被 Telegram 判成「冒充官方客户端」；
+  #   ws  只用 WebSocket（DC IP 被封锁又无法用代理时用）。
   transport: auto
 
 server:
+  # Web 服务监听地址，手机通过 http://电脑IP:5278 访问
   listen: ":5278"
 
 data:
+  # 数据库、会话、视频、封面的存储根目录
   dir: "./data"
 
+# 在线播放：单线程顺序按块读取，不能开并发（TG Web 端并发读块无效且容易风控限流）
 stream:
+  # 主块大小（KB，最大 1024）：块与官方 1MB 窗口对齐
   chunk_kb: 1024
+  # 已读块的内存缓存上限（MB），拖动进度条/重播直接命中，不再向 Telegram 请求
   cache_mb: 128
+  # 视频块磁盘缓存上限（MB）：边播边落盘，重启有效，整集缓存完重播=本地播放；0=关闭
   disk_cache_mb: 2048

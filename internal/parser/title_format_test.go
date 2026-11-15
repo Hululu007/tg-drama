@@ -7,7 +7,7 @@ func TestTitleEpisodeRangeFormats(t *testing.T) {
 		caption, file, name string
 		ep, end             int
 	}{
-
+		// 本地来源 26998/26999：集数在书名号内部，文件名不提供剧名。
 		{"《乡下小子的姐姐  第1-2集》", "竖屏(1).mp4", "乡下小子的姐姐", 1, 2},
 		{"《后悔有妻  第1-2集》", "竖屏(1).mp4", "后悔有妻", 1, 2},
 		{"《后悔有妻》 第1-2集", "", "后悔有妻", 1, 2},
@@ -18,7 +18,7 @@ func TestTitleEpisodeRangeFormats(t *testing.T) {
 		{"《远山来信 第1-2合集》", "", "远山来信", 1, 2},
 		{"《远山来信 ep03-04》", "", "远山来信", 3, 4},
 		{"", "远山来信 第1-2集_watermarked.mp4", "远山来信", 1, 2},
-
+		// 本地格式样本：来源2973、14522、2762、1209、4275。
 		{"", "【AI短剧】『情趣318』第1-2集原版 (1).mp4", "情趣318", 1, 2},
 		{"【快门沦陷/光影交错爱意失控】1-5 合辑", "", "快门沦陷 光影交错爱意失控", 1, 5},
 		{"", "私密视角1-7合集.mp4", "私密视角", 1, 7},
@@ -66,7 +66,7 @@ func TestNameNoiseRangeIsIdempotent(t *testing.T) {
 		{"远山来信 ep03-04", "远山来信"},
 		{"远山来信 第１－２集", "远山来信"},
 		{"远山来信 第1-2集 水印", "远山来信"},
-
+		// 孤立“第”本身没有足够证据，不对已损坏名称盲目裁字。
 		{"书香门第", "书香门第"},
 		{"不完整标题 第", "不完整标题 第"},
 	}
@@ -111,6 +111,8 @@ func TestMultiTitleUsesSameNameCleanup(t *testing.T) {
 	}
 }
 
+// 「」『』在中文/日文文案里是对话引号，不是剧名容器：
+// 真实库曾因此把台词「射臉上」「君の全てが欲しい」和昵称「Chloe Lin」建成剧名。
 func TestDialogueQuotesAreNotTitleContainers(t *testing.T) {
 	for _, caption := range []string{
 		"3招！讓女生接受「射臉上」！ 關鍵教學增加意願\n\n #吃瓜 #內涵",
@@ -123,7 +125,7 @@ func TestDialogueQuotesAreNotTitleContainers(t *testing.T) {
 			t.Errorf("Parse(%q) treated dialogue quotes as a title container: %+v", caption, got)
 		}
 	}
-
+	// 真正的书名号仍然有效
 	if got, err := New().Parse("《远山来信》第2集", ""); err != nil || !got.Container || got.ShowName != "远山来信" {
 		t.Fatalf("book title regressed: %+v %v", got, err)
 	}

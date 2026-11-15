@@ -1,5 +1,7 @@
 package storage
 
+// This is deliberately independent of Open, migrations, rebuilds and Telegram.
+// The only database mutation this tool performs is the final, guarded UPDATE.
 import (
 	"context"
 	"crypto/sha256"
@@ -23,6 +25,9 @@ import (
 const NameAuditVersion = 1
 const nameAuditPolicy = "parser-name-only-v1"
 
+// NameAuditPlan is both a redacted preview and the input to an explicitly
+// selected apply. It contains no raw captions, file paths or Telegram secrets.
+// Treat plans as local files: evidence hashes are freshness checks, not signatures.
 type NameAuditPlan struct {
 	Version           int                   `json:"version"`
 	Policy            string                `json:"policy"`
@@ -39,7 +44,7 @@ type NameRepairCandidate struct {
 	OldNorm             string              `json:"old_normalized"`
 	NewName             string              `json:"new_name"`
 	NewNorm             string              `json:"new_normalized"`
-	Status              string              `json:"status"`
+	Status              string              `json:"status"` // eligible, review, conflict
 	Reasons             []string            `json:"reasons"`
 	SourceIDs           []int64             `json:"source_ids"`
 	PhotoIDs            []int64             `json:"photo_ids"`
@@ -48,6 +53,7 @@ type NameRepairCandidate struct {
 	ConflictingShowIDs  []int64             `json:"conflicting_show_ids,omitempty"`
 }
 
+// Title is a bounded parser result, never an excerpt of the full plot.
 type NameTitleEvidence struct {
 	Kind     string `json:"kind"`
 	ID       int64  `json:"id"`
@@ -110,19 +116,19 @@ func nameDatabasePath(path string) (string, error) {
 	if !info.Mode().IsRegular() {
 		return "", errors.New("database must be a regular file")
 	}
-
+	// Resolve symlinks so a plan cannot silently switch between different files.
 	return filepath.EvalSymlinks(abs)
 }
 
 func openNameDatabase(ctx context.Context, path string, writable, queryOnly bool) (*sql.DB, error) {
 	p := filepath.ToSlash(path)
 	if !strings.HasPrefix(p, "/") {
-		p = "/" + p
+		p = "/" + p // file:///C:/... on Windows; URL escapes ?, # and spaces.
 	}
 	u := url.URL{Scheme: "file", Path: p}
 	q := url.Values{"mode": {"ro"}, "_pragma": {"busy_timeout(5000)"}}
 	if writable {
-		q.Set("mode", "rw")
+		q.Set("mode", "rw") // never create a missing database
 		q.Set("_txlock", "immediate")
 	}
 	if queryOnly {
@@ -141,6 +147,8 @@ func openNameDatabase(ctx context.Context, path string, writable, queryOnly bool
 	return db, nil
 }
 
+// AuditNames opens only an existing database, with BOTH mode=ro and query_only.
+// A read transaction supplies a consistent view, including committed WAL data.
 func AuditNames(ctx context.Context, path string) (*NameAuditPlan, error) {
 	abs, err := nameDatabasePath(path)
 	if err != nil {
@@ -291,7 +299,7 @@ func auditNameSnapshot(ctx context.Context, q nameQuery, path string) (*NameAudi
 	if err != nil {
 		return nil, nil, nil, err
 	}
-
+	// Empty episodes are retained in the evidence hash and block auto-repair.
 	rows, err = q.QueryContext(ctx, `SELECT e.show_id, e.id, e.episode_no FROM episodes e WHERE NOT EXISTS (SELECT 1 FROM sources s WHERE s.episode_id=e.id) ORDER BY e.id`)
 	if err != nil {
 		return nil, nil, nil, err
@@ -403,7 +411,7 @@ func evaluateNameShow(s *nameShow) *NameRepairCandidate {
 		var err error
 		if file {
 			fn := parser.NameFromFileName(text)
-			if fn == "" {
+			if fn == "" { // A hash/portrait filename is not a competing title.
 				e.Issue = "filename_not_title"
 				c.Evidence = append(c.Evidence, e)
 				return false
@@ -427,7 +435,7 @@ func evaluateNameShow(s *nameShow) *NameRepairCandidate {
 		if len(parsed.Multi) > 1 {
 			e.Issue = "multi_title"
 		}
-
+		// Parse intentionally accepts some two-title posts; repairs must be stricter.
 		containerNorms := map[string]bool{}
 		for _, title := range nameAuditContainers.FindAllString(text, -1) {
 			v, err := p.Parse(title, "")
@@ -441,12 +449,16 @@ func evaluateNameShow(s *nameShow) *NameRepairCandidate {
 		if parsed.FromTag && parsed.TitleName != "" && parser.Normalize(parsed.TitleName) != parsed.NormName {
 			e.Issue = "ambiguous_title_tag"
 		}
-
+		// A short, unselected tag beside a real container (e.g. 色 / 群p)
+		// is category metadata, not independently trustworthy title evidence.
+		// Adopted tags and longer competing title tags remain conservative.
 		trustTag := parsed.FromTag || !parsed.Container || utf8.RuneCountInString(parsed.TagName) >= 3
 		if trustTag && parsed.TagName != "" && !parser.IsJunkShowName(parsed.TagName) && parser.Normalize(parser.TrimNameNoise(parsed.TagName, false)) != parsed.NormName {
 			e.Issue = "ambiguous_title_tag"
 		}
-
+		// Promotional footers do not invalidate an unambiguous explicit title:
+		// this tool repairs names, not source/playback eligibility. Without an
+		// actual title container, promotional/prose inference remains review-only.
 		if !parsed.Container && (parser.IsAdCaption(text) || parser.IsNonDramaCaption(text)) {
 			e.Issue = "non_drama_or_promotion"
 		}
@@ -465,7 +477,9 @@ func evaluateNameShow(s *nameShow) *NameRepairCandidate {
 		if parsed.ShowName != s.name || parsed.NormName != s.norm {
 			changed = true
 		}
-
+		// Filename/tag inference can corroborate or contradict, but cannot by
+		// itself authorize a repair: at least one explicit caption container is
+		// required. This deliberately prefers review over widening eligibility.
 		explicit = explicit || (!file && parsed.Container && len(containerNorms) == 1 && e.Issue == "")
 		if !file && parsed.Container && len(containerNorms) == 1 && e.Issue == "" && parsed.EpisodeNo > 0 && parsed.EpEnd > parsed.EpisodeNo && nameAuditRange.MatchString(text) {
 			rangeTitle = true
@@ -503,7 +517,8 @@ func evaluateNameShow(s *nameShow) *NameRepairCandidate {
 		return nil
 	}
 	c.NewName, c.NewNorm = name, norm
-
+	// A candidate whose target equals the current values is a no-op: the evidence
+	// merely varies spacing, and there is nothing to repair.
 	if c.NewName == s.name && c.NewNorm == s.norm {
 		return nil
 	}
@@ -511,7 +526,9 @@ func evaluateNameShow(s *nameShow) *NameRepairCandidate {
 		reason("no_explicit_title")
 	}
 	related := norm != "" && parser.Normalize(cleanedOld) == norm
-
+	// The legacy range bug left an isolated marker, separated by whitespace.
+	// Never strip a literal suffix (e.g. 门第), and never infer from the old name
+	// alone: a successfully parsed explicit 第N-M集 title is required as well.
 	if m := nameAuditOrphan.FindStringSubmatch(s.name); !related && m != nil && rangeTitle {
 		related = parser.Normalize(m[1]) == norm
 	}
@@ -564,6 +581,10 @@ func markNameConflicts(plan *NameAuditPlan, shows map[int64]*nameShow) {
 	}
 }
 
+// ApplyNameRepairs requires a preview and an explicit nonempty selection. Rows
+// that are stale, ambiguous or conflicting are skipped, never merged. SQL
+// errors roll back the entire selected batch. Already-applied plans are no-ops.
+// Call only offline: the write lock covers revalidation, backup and all updates.
 func ApplyNameRepairs(ctx context.Context, path string, plan *NameAuditPlan, ids []int64, backupPath string) (*NameRepairResult, error) {
 	result := &NameRepairResult{Applied: []int64{}, Skipped: []NameRepairSkip{}}
 	if plan == nil || plan.Version != NameAuditVersion || plan.Policy != nameAuditPolicy || len(ids) == 0 || backupPath == "" {
@@ -595,7 +616,7 @@ func ApplyNameRepairs(ctx context.Context, path string, plan *NameAuditPlan, ids
 		return result, err
 	}
 	defer db.Close()
-	tx, err := db.BeginTx(ctx, nil)
+	tx, err := db.BeginTx(ctx, nil) // _txlock=immediate: no racing writer
 	if err != nil {
 		return result, err
 	}
@@ -648,7 +669,7 @@ func ApplyNameRepairs(ctx context.Context, path string, plan *NameAuditPlan, ids
 		}
 	}
 	if len(updates) == 0 {
-		return result, nil
+		return result, nil // No writes, no unnecessary backup on a repeated apply.
 	}
 	backup, err := backupNameDatabase(ctx, abs, backupPath)
 	if err != nil {
@@ -686,6 +707,9 @@ func ApplyNameRepairs(ctx context.Context, path string, plan *NameAuditPlan, ids
 	return result, nil
 }
 
+// Reject custom schemas that use mutable names as foreign keys. Turning foreign
+// keys off would break those references; turning them on could cascade writes.
+// The application's schema references only shows.id, which is never changed.
 func checkNameForeignKeys(ctx context.Context, q nameQuery) error {
 	rows, err := q.QueryContext(ctx, `SELECT name FROM sqlite_schema WHERE type='table' ORDER BY name`)
 	if err != nil {
@@ -735,10 +759,14 @@ func checkNameForeignKeys(ctx context.Context, q nameQuery) error {
 }
 
 func sameNamePath(a, b string) bool {
-
+	// Windows is the primary host; EqualFold also safely rejects more aliases on
+	// case-sensitive hosts when checking dangerous backup sidecar destinations.
 	return strings.EqualFold(filepath.Clean(a), filepath.Clean(b))
 }
 
+// VACUUM INTO reads the live SQLite snapshot, not just the main file, so WAL
+// commits are included. The caller holds BEGIN IMMEDIATE on another connection:
+// no writer can change that snapshot before the guarded updates finish.
 func backupNameDatabase(ctx context.Context, source, destination string) (string, error) {
 	dest, err := filepath.Abs(destination)
 	if err != nil {
@@ -759,7 +787,8 @@ func backupNameDatabase(ctx context.Context, source, destination string) (string
 			return "", errors.New("backup target has an existing or inaccessible SQLite sidecar")
 		}
 	}
-
+	// SQLite accepts an existing empty target. O_EXCL reserves it without ever
+	// truncating an existing file, including a pre-existing zero-byte file.
 	f, err := os.OpenFile(dest, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 	if err != nil {
 		return "", fmt.Errorf("reserve new backup (existing targets are refused): %w", err)
@@ -767,7 +796,8 @@ func backupNameDatabase(ctx context.Context, source, destination string) (string
 	if err := f.Close(); err != nil {
 		return "", err
 	}
-
+	// query_only would also prohibit writing the VACUUM destination. mode=ro
+	// still enforces that the SOURCE cannot be changed by this connection.
 	db, err := openNameDatabase(ctx, source, false, false)
 	if err != nil {
 		return "", err

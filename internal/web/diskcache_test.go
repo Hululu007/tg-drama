@@ -8,6 +8,7 @@ import (
 	"time"
 )
 
+// 磁盘缓存：写入后重复请求不再打 Telegram；「重启」（重建缓存实例）后仍然命中。
 func TestDiskCacheServeAndRestart(t *testing.T) {
 	srv, store := newTestServerRaw(t)
 	_, ep1, _ := seedShow(t, store)
@@ -41,6 +42,7 @@ func TestDiskCacheServeAndRestart(t *testing.T) {
 		t.Fatalf("落盘后应全部命中磁盘，不再打 Telegram: first=%d now=%d", first, calls)
 	}
 
+	// 「重启」：同一 store + 同一目录新建缓存实例（模拟进程重启后索引仍有效）
 	srv2 := &Server{store: store, svc: srv.svc}
 	srv2.applyStreamOptions(1024*1024, 64)
 	srv2.disk = newDiskCache(filepath.Join(dir, "mediacache"), 64<<20)
@@ -57,26 +59,30 @@ func TestDiskCacheServeAndRestart(t *testing.T) {
 	}
 }
 
+// 配额淘汰：超过配额时按「最久未访问的来源文档」整组清理。
 func TestDiskCacheEviction(t *testing.T) {
 	dir := t.TempDir()
-	dc := newDiskCache(filepath.Join(dir, "mc"), 3<<20)
+	dc := newDiskCache(filepath.Join(dir, "mc"), 3<<20) // 配额 3MB
 	if dc == nil {
 		t.Fatal("disk cache 未启用")
 	}
-	block := make([]byte, 1<<20)
+	block := make([]byte, 1<<20) // 每块 1MB
 	dc.storeBlock(1, 0, block, 1<<20, 1)
 	dc.storeBlock(2, 0, block, 1<<20, 2)
 	dc.storeBlock(3, 0, block, 1<<20, 3)
 
+	// 直接设定访问时间（位图索引是导出结构的私有字段，同包可访问），
+	// 避免「秒级精度 + 整组淘汰」带来的非确定性
 	dc.mu.Lock()
-	dc.indexes[1].Accessed = time.Now().Unix() + 100
-	dc.indexes[2].Accessed = 1
+	dc.indexes[1].Accessed = time.Now().Unix() + 100 // 最常访问，必须存活
+	dc.indexes[2].Accessed = 1                       // 最久未访问，先被淘汰
 	dc.indexes[3].Accessed = 50
 	dc.mu.Unlock()
 
-	dc.storeBlock(3, 1, block, 3<<20, 3)
+	dc.storeBlock(3, 1, block, 3<<20, 3) // 4MB → 触发淘汰
 	dc.evictIfNeeded()
 
+	// 淘汰顺序 doc2 → doc3（整组），直到 ≤90% 配额；doc1 最新，存活
 	if dc.hasBlock(2, 0) {
 		t.Fatal("最久未访问的文档 2 应被淘汰")
 	}
@@ -88,6 +94,7 @@ func TestDiskCacheEviction(t *testing.T) {
 	}
 }
 
+// 清理：clear 后索引与文件全部消失。
 func TestDiskCacheClear(t *testing.T) {
 	dir := t.TempDir()
 	dc := newDiskCache(filepath.Join(dir, "mc"), 64<<20)

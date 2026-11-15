@@ -11,6 +11,7 @@ import (
 	"tgdrama/internal/storage"
 )
 
+// 一页消息入库：按升序建剧/集、写来源与原始消息，重复入库应被去重。
 func TestIngestPage(t *testing.T) {
 	dir := t.TempDir()
 	db, err := storage.Open(filepath.Join(dir, "t.db"))
@@ -39,7 +40,7 @@ func TestIngestPage(t *testing.T) {
 	msgs := []*tg.Message{
 		videoMessage(11, "母上攻略 第1集 #母上攻略", 1001),
 		videoMessage(12, "母上攻略 第2集 #母上攻略", 1002),
-		videoMessage(13, "母上攻略 第1集 #母上攻略", 1003),
+		videoMessage(13, "母上攻略 第1集 #母上攻略", 1003), // 与 11 同集，按分段处理
 	}
 	n, err := svc.ingestPage(context.Background(), c, msgs, nil)
 	if err != nil {
@@ -57,6 +58,7 @@ func TestIngestPage(t *testing.T) {
 		t.Fatalf("show = %+v, want 母上攻略 with 2 episodes", shows[0])
 	}
 
+	// 重复入库：raw_messages 已存在，应全部跳过
 	n, err = svc.ingestPage(context.Background(), c, msgs, nil)
 	if err != nil {
 		t.Fatalf("ingest again: %v", err)
@@ -88,6 +90,7 @@ func videoMessage(id int, caption string, docID int64) *tg.Message {
 	}
 }
 
+// 关闭的频道不再采集：即使某条路径把消息递到入库入口，也不会写进库。
 func TestIngestSkipsDisabledChat(t *testing.T) {
 	dir := t.TempDir()
 	db, err := storage.Open(filepath.Join(dir, "t.db"))
@@ -126,6 +129,8 @@ func TestIngestSkipsDisabledChat(t *testing.T) {
 	}
 }
 
+// 消息带 alt_documents 时按清晰度落库：每个副文档一条变体，
+// 只有 video/* 且体积有效的才收，HLS 索引文档跳过。
 func TestIngestStoresAltDocuments(t *testing.T) {
 	dir := t.TempDir()
 	db, err := storage.Open(filepath.Join(dir, "t.db"))
@@ -153,9 +158,9 @@ func TestIngestStoresAltDocuments(t *testing.T) {
 			Attributes:    []tg.DocumentAttributeClass{&tg.DocumentAttributeVideo{Duration: 60, W: 720, H: 1280}}},
 		&tg.Document{ID: 5003, AccessHash: 9, Size: 200, MimeType: "video/mp4",
 			Attributes: []tg.DocumentAttributeClass{&tg.DocumentAttributeVideo{Duration: 60, W: 480, H: 854}}},
-
+		// HLS quality file 不是可直接播放的视频，必须跳过
 		&tg.Document{ID: 5004, AccessHash: 10, Size: 50, MimeType: "application/x-mpegurl"},
-
+		// 主文档重复出现不能重复入库
 		&tg.Document{ID: 5001, AccessHash: 7, Size: 1024, MimeType: "video/mp4"},
 	}
 	n, err := svc.ingestPage(context.Background(), c, []*tg.Message{msg}, nil)

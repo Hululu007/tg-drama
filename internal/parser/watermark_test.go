@@ -42,7 +42,7 @@ func TestTagTruncatedByPunctuation(t *testing.T) {
 func TestTagAfterLongTitleStillTitle(t *testing.T) {
 	p := New()
 	cases := []struct{ caption, want string }{
-
+		// 标签在书名号前面/后面都不影响标题容器
 		{"#AI #短剧 #真人 #韩漫 美丽新世界1-42 合集", "美丽新世界"},
 		{"#真人 #熟女 《母上攻略》第3集", "母上攻略"},
 	}

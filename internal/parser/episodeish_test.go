@@ -2,6 +2,7 @@ package parser
 
 import "testing"
 
+// 剧名候选以集号开头时说明它其实是「第N集 + 营销词」，应改用 #标签 定名。
 func TestIsEpisodeishTitle(t *testing.T) {
 	cases := []struct {
 		in   string

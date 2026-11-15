@@ -7,6 +7,7 @@ import (
 	"tgdrama/internal/storage"
 )
 
+// historyCount 读首页「继续观看」的条目数（bootstrap.continue_list）
 func historyCount(t *testing.T, h http.Handler, stage string) int {
 	t.Helper()
 	code, out := doJSON(t, h, http.MethodGet, "/api/bootstrap", nil)
@@ -19,6 +20,8 @@ func historyCount(t *testing.T, h http.Handler, stage string) int {
 	return 0
 }
 
+// 关闭的频道里看过的内容不能再出现在首页「继续观看」：
+// 该路径以前只查 history 表，绕过了「来源必须来自启用频道」的过滤。
 func TestDisabledChatHidesHistory(t *testing.T) {
 	h, store := newTestServer(t)
 	_, ep1, _ := seedShow(t, store)
@@ -38,6 +41,7 @@ func TestDisabledChatHidesHistory(t *testing.T) {
 		t.Fatalf("关闭频道后继续观看 = %d，期望 0（关闭频道的内容不该再出现）", n)
 	}
 
+	// 重新开启应完整恢复
 	if err := store.SetChatEnabled(100, true); err != nil {
 		t.Fatal(err)
 	}
@@ -46,6 +50,8 @@ func TestDisabledChatHidesHistory(t *testing.T) {
 	}
 }
 
+// 只有一集、名字明显不是短剧（演唱会/福利/众筹…）的条目要隐藏，
+// 但「正常短剧只发了一集」仍然要出现在列表里——不能按集数一刀切。
 func TestNonDramaSingleHiddenNormalSingleShown(t *testing.T) {
 	h, store := newTestServer(t)
 
@@ -97,7 +103,7 @@ func TestNonDramaSingleHiddenNormalSingleShown(t *testing.T) {
 	if got, _ := list[0].(map[string]any)["id"].(float64); int64(got) != dramaID {
 		t.Fatalf("列表里应只剩正常单集剧 %d，实际拿到 %v", dramaID, list[0])
 	}
-
+	// 隐藏只影响列表；详情仍能打开（搜索到后可点进去看），数据不删
 	if code, _ := doJSON(t, h, http.MethodGet, "/api/shows/"+itoa(junkID), nil); code != http.StatusOK {
 		t.Fatalf("演唱会条目详情返回 %d，期望 200", code)
 	}
@@ -108,6 +114,8 @@ func TestNonDramaSingleHiddenNormalSingleShown(t *testing.T) {
 	}
 }
 
+// 剧名只是泛分类词（「露脸」这类）的条目要被判成非短剧并整库隐藏，
+// 而不是作为一部「剧」出现在列表、搜索和继续观看里。
 func TestHiddenShowRemovedFromList(t *testing.T) {
 	h, store := newTestServer(t)
 
@@ -128,7 +136,7 @@ func TestHiddenShowRemovedFromList(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-
+	// 再补一集：本用例只验证「junk 名整库隐藏」，不让单集/多集过滤成为变量
 	ep2, _, err := store.UpsertEpisode(showID, 2)
 	if err != nil {
 		t.Fatal(err)
@@ -163,6 +171,7 @@ func TestHiddenShowRemovedFromList(t *testing.T) {
 		t.Fatalf("隐藏后继续观看 = %d，期望 0", n)
 	}
 
+	// 规则重算可逆：名字改回正常剧名后应恢复显示
 	if _, _, err := store.UpsertShow("真实短剧", "露脸"); err != nil {
 		t.Fatal(err)
 	}

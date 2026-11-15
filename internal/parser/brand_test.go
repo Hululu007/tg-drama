@@ -2,6 +2,8 @@ package parser
 
 import "testing"
 
+// TestChannelBrandStripped 发布频道自己的厂牌/水印（ygwp/CBDJ/9PM/2048原创/jile ai/ReelShort）
+// 出现在文件名里时不应该留在剧名里；只剩厂牌+序号的整条都不是剧。
 func TestChannelBrandStripped(t *testing.T) {
 	cases := []struct{ file, want string }{
 		{"ygwp 小狐仙.mp4", "小狐仙"},

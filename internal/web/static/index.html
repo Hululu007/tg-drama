@@ -67,6 +67,15 @@ h1{font-size:18px;margin:0;letter-spacing:.5px}
 
 .badge.new{left:6px;top:6px;bottom:auto;background:linear-gradient(135deg,#ff3b5c,#ff7a45);
   font-weight:700;box-shadow:0 2px 8px rgba(255,59,92,.4)}
+/* 排行榜名次角标：前三名各有配色，其余为半透明黑底 */
+.rank-ribbon{position:absolute;left:6px;top:6px;height:20px;min-width:20px;padding:0 6px;
+  border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:11px;
+  font-weight:800;letter-spacing:.2px;color:#fff;background:rgba(0,0,0,.66);
+  backdrop-filter:blur(4px);box-shadow:0 2px 8px rgba(0,0,0,.35)}
+.rank-ribbon.t1{background:linear-gradient(135deg,#ff5c8a,#ff2d55);box-shadow:0 2px 10px rgba(255,45,85,.5)}
+.rank-ribbon.t2{background:linear-gradient(135deg,#9d8cff,#5b46ff);box-shadow:0 2px 10px rgba(91,70,255,.45)}
+.rank-ribbon.t3{background:linear-gradient(135deg,#ffd166,#ff9f0a);color:#3a2400;
+  box-shadow:0 2px 10px rgba(255,159,10,.45)}
 .card .name{margin:8px 9px 2px;font-size:13px;line-height:1.35;font-weight:600;
   display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 .card .meta{margin:0 9px 9px;font-size:11px;color:var(--sub)}
@@ -76,8 +85,14 @@ h1{font-size:18px;margin:0;letter-spacing:.5px}
 .more button{border:1px solid var(--line);background:var(--bg2);color:var(--sub);
   border-radius:999px;padding:9px 26px;font-size:13px}
 .empty{text-align:center;color:var(--sub);font-size:13px;padding:60px 20px}
+.empty-msg{margin:0}
+.empty-join{margin-top:16px;border:0;border-radius:12px;padding:11px 22px;
+  font-size:13.5px;font-weight:700;color:#fff;letter-spacing:.2px;
+  background:linear-gradient(135deg,var(--accent),var(--accent2));
+  box-shadow:0 6px 18px rgba(255,92,138,.28);cursor:pointer}
+.empty-join:active{transform:translateY(1px);box-shadow:0 3px 10px rgba(255,92,138,.24)}
 .sheet{position:fixed;inset:0;z-index:50;display:flex;align-items:flex-end}
-
+/* 登录层（与 classic 后台同一套交互，合并进主界面后的唯一登录入口） */
 .hidden{display:none}
 .login-tabs{display:flex;gap:4px;padding:4px;margin:14px 0 12px;border-radius:12px;
   background:var(--bg);border:1px solid var(--line)}
@@ -198,9 +213,30 @@ h1{font-size:18px;margin:0;letter-spacing:.5px}
 @keyframes sh{to{background-position:-200% 0}}
 
   .player-layer{position:fixed;inset:0;z-index:60;background:#000;overflow:hidden}
-  
-  .player-layer.css-rotate{inset:auto;left:50%;top:50%;width:100vh;height:100vw;
-    transform:translate(-50%,-50%) rotate(90deg)}
+  /* 横屏视频在竖屏窗口里的强制 CSS 翻转（主力路径，不再取决于方向锁是否成功）：
+     盒子宽高与位移全部由 JS 按真实可视区写进 --rot-*（宿主 WebView 里 100vh 常
+     常不等于可视高度），绕左上角转 90° 后右移一个视口宽度正好铺满竖屏窗口。
+     翻转做在内层 #rp-slide 上而不是全屏的 #rp-layer 上：:fullscreen 的 UA 样式
+     只清洗全屏元素自身的 transform，管不到它的子元素——所以即使壳子真的进了
+     原生全屏，翻转也不会被「闪一下又拍回竖屏」 */
+  .player-layer.css-rotate #rp-slide{left:0!important;top:0!important;
+    right:auto!important;bottom:auto!important;margin:0!important;
+    width:var(--rot-w,100vh)!important;height:var(--rot-h,100vw)!important;
+    transform-origin:0 0!important;will-change:transform;
+    transform:translate(var(--rot-x,0px),var(--rot-y,0px)) rotate(90deg)!important}
+  /* 横屏（翻转）状态下 .vmeta 只保留剧名和选集入口：简介、标签、时长/分辨率/大小
+     这类次要信息全部隐藏，右侧按钮列和进度条不再被挤 */
+  .player-layer.css-rotate .vmeta > :not(.vt):not(.cbar){display:none!important}
+  .player-layer.css-rotate .vmeta .vt{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  /* 翻转后可视高度只剩原宽度那么高：右侧按钮列压紧，5 个按钮才不会撞到底部
+     简介/进度条；旋转空间里的 safe-area 也换了边，所以顶部栏用固定内边距 */
+  .player-layer.css-rotate .vside{gap:9px;right:12px}
+  .player-layer.css-rotate .vside button{font-size:10.5px;min-width:36px;gap:3px}
+  .player-layer.css-rotate .vside svg{width:22px;height:22px}
+  .player-layer.css-rotate .vside .spd b{font-size:13px}
+  .player-layer.css-rotate .vtop{padding:8px 12px}
+  .player-layer.css-rotate .vmeta{padding:14px 58px 28px 14px}
+  .player-layer.css-rotate .vprog{padding-bottom:6px}
   .slide{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
     background:#000;overflow:hidden}
   .vhost{position:absolute;inset:0;background:#000}
@@ -243,7 +279,10 @@ h1{font-size:18px;margin:0;letter-spacing:.5px}
   .vtop .vclose{flex:none;width:32px;height:32px;border:0;border-radius:50%;
     background:rgba(255,255,255,.14);display:flex;align-items:center;justify-content:center}
   .vtop .vclose svg{width:15px;height:15px;fill:none;stroke:#fff;stroke-width:2.4;stroke-linecap:round}
-  .vside{position:absolute;right:10px;top:50%;transform:translateY(-50%);z-index:4;
+  /* z-index 9：右侧按钮必须盖在简介(.vmeta 4)、进度条(.vprog 7)、错误提示(6)
+     之上，否则按钮底边会被这些同层/更高层元素压住而点不到；弹层 .psheet(20) 仍在
+     它之上，不受影响 */
+  .vside{position:absolute;right:10px;top:50%;transform:translateY(-50%);z-index:9;
     display:flex;flex-direction:column;gap:16px;align-items:center;color:#fff;transition:opacity .25s}
   .vside button{border:0;background:none;color:#fff;padding:0;display:flex;flex-direction:column;
     align-items:center;gap:4px;font-size:11px;min-width:40px;text-shadow:0 1px 3px rgba(0,0,0,.65)}
@@ -361,7 +400,7 @@ h1{font-size:18px;margin:0;letter-spacing:.5px}
 </div>
 <main class="grid" id="grid"></main>
 <div class="more" id="more" hidden><button id="btn-more">加载更多</button></div>
-<div class="empty" id="empty" hidden>暂无内容</div>
+<div class="empty" id="empty" hidden><p class="empty-msg" id="empty-msg">暂无内容</p><button class="empty-join" id="empty-join" type="button" hidden>加入推荐频道获取内容</button></div>
 
 <div class="sheet" id="sheet" hidden>
   <div class="sheet-mask" id="sheet-mask"></div>
@@ -588,20 +627,20 @@ h1{font-size:18px;margin:0;letter-spacing:.5px}
     set: function (k, v) { try { localStorage.setItem(k, v); } catch (e) {} }
   };
 
-  
-  
-  
-  
-  
-  
-  
-  
-  
+  // 后端地址判定顺序（侧载规则页 tg-drama-rule.html 靠这个在 TVBox 里活下来）：
+  //   1. ?base= 显式指定（调试/反向代理用）；
+  //   2. localStorage 里记住的地址；
+  //   3. 有宿主桥 window.fm：宿主常常把 html 放在自己的本地 http 服务上
+  //      （如 http://127.0.0.1:9978/file/...），此时 location.origin 是宿主端口，
+  //      拿它拼 /api 只会请求到宿主自己（返回 html），页面就显示「接口连接失败」。
+  //      有宿主桥时一律用本机默认端口；
+  //   4. 没有宿主桥且是 http(s)：同源（内置页由本服务托管，origin 就是本服务）；
+  //   5. 其余（file:// 侧载、宿主桥迟到）：默认端口。
   function detectBase() {
     var forced = '';
     try {
       forced = new URLSearchParams(location.search).get('base') || '';
-    } catch (e) {   }
+    } catch (e) { /* 老内核没有 URLSearchParams */ }
     var saved = forced || store.get('tgdrama_base');
     if (saved) return saved.replace(/\/+$/, '');
 
@@ -613,8 +652,8 @@ h1{font-size:18px;margin:0;letter-spacing:.5px}
   }
   var BASE = detectBase();
 
-  
-  
+  // 探测 BASE 是否真的是本服务：宿主托管时同一路径返回的是 html，JSON 解析必然失败，
+  // 这种时候退回默认端口，别让整页停在「接口连接失败」。
   var baseChecked = false;
   function ensureBase() {
     if (baseChecked) return Promise.resolve(BASE);
@@ -656,14 +695,23 @@ h1{font-size:18px;margin:0;letter-spacing:.5px}
     favUpdates: 0,
     sortMode: 'natural',
     epProgress: {},
-    playingEp: null
+    playingEp: null,
+    // 排行榜：rankBoards 是 /api/rankings 下发且抓到条目的榜单，
+    // rankKey 是当前选中的榜单 key（state.mode === 'rank' 时有效）
+    rankBoards: [],
+    rankKey: '',
+    rankMeta: null,
+    // 频道状态：chanEmpty = 账号下没有任何启用的短剧频道；
+    // libEmpty = 「全部」列表真的是 0 部（用来决定空状态里要不要给「加入推荐频道」入口）
+    chanEmpty: false,
+    libEmpty: false
   };
 
   try { if (localStorage.getItem('tgdrama.sort') === 'episodes') state.sortMode = 'episodes'; } catch (e) {}
-  
-  
-  
-  
+  // $ 按 id 取元素：兼容 $('banner') 与 $('#banner') 两种写法。
+  // 登录层里大量写成 $('#qr-img') 这种选择器风格，而 getElementById 收到带 # 的
+  // 字符串只会返回 null，导致整块登录 UI（二维码、tab 切换、手机号/验证码按钮）
+  // 全部静默失效，这里统一容错，避免再出现同类问题。
   var $ = function (id) {
     if (id == null) return null;
     var key = String(id);
@@ -736,8 +784,8 @@ h1{font-size:18px;margin:0;letter-spacing:.5px}
       });
   }
 
-  
-  
+  // 任何请求失败都试一次默认端口：宿主桥比初始化晚到、或宿主把页面托管在自己的
+  // http 服务上时，BASE 会先被错定成宿主端口，这里兜住，页面不至于整块不可用。
   function api(path, opts) {
     return apiAt(BASE, path, opts).catch(function (err) {
       if (BASE === DEFAULT_BASE) throw err;
@@ -746,20 +794,20 @@ h1{font-size:18px;margin:0;letter-spacing:.5px}
     });
   }
 
-  
-  let qrTimer = null;        
-  let qrRefreshTimer = null; 
-  let authPollTimer = null;  
-  let codeTimer = null;      
-  let modePushed = false;    
-  let loginOpen = false;     
-  let loginAutoTried = false; 
-  let lastQrURL = '';        
-  let lastAuthMsg = '';      
-  let lastAuthPhase = '';    
+  // ================= 登录层（原 classic 后台的登录流程合并进主界面） =================
+  let qrTimer = null;        // 二维码未就绪时的短重试
+  let qrRefreshTimer = null; // 二维码就绪后的定期刷新
+  let authPollTimer = null;  // 登录层打开时的快速轮询
+  let codeTimer = null;      // 验证码重发倒计时
+  let modePushed = false;    // 是否已把本机偏好的登录方式推给后端
+  let loginOpen = false;     // 登录层是否打开（打开时轮询加速到 2.5s）
+  let loginAutoTried = false; // 本次页面加载是否已自动弹过登录层（每加载至多一次）
+  let lastQrURL = '';        // 上一次渲染的二维码 token，避免同 token 反复重设 src 闪屏
+  let lastAuthMsg = '';      // 上一次由后端写入的提示文案（后端清空时同步清掉）
+  let lastAuthPhase = '';    // 上一次的后端阶段（仅在阶段切换时抢焦点）
 
-  
-  
+  // 移动端判定：手机上没法从相册选二维码图片给 Telegram 扫，
+  // 所以手机默认走「账号登录」，PC 默认走「扫码登录」。
   function isMobileDevice() {
     var ua = navigator.userAgent || '';
     if (/Android|iPhone|iPad|iPod|Windows Phone|HarmonyOS|Mobile/i.test(ua)) return true;
@@ -770,14 +818,14 @@ h1{font-size:18px;margin:0;letter-spacing:.5px}
     try {
       var saved = store.get('tgdrama.loginMode');
       if (saved === 'qr' || saved === 'phone') return saved;
-    } catch (e) {   }
+    } catch (e) { /* 隐私模式忽略 */ }
     return isMobileDevice() ? 'phone' : 'qr';
   }
 
   var loginMode = preferredLoginMode();
 
-  
-  
+  // paintLoginMode 登录层 DOM 未就绪时（个别宿主内核行内脚本执行早于 DOM 完成）
+  // 直接跳过，等下一次 checkAuth / openLogin 再画，绝不让 null 打断初始化。
   function paintLoginMode() {
     var phone = loginMode === 'phone';
     var tabQr = $('#tab-qr'), tabPhone = $('#tab-phone');
@@ -807,12 +855,12 @@ h1{font-size:18px;margin:0;letter-spacing:.5px}
     }
   }
 
-  
+  // 切换登录方式：记住选择，并通知后端换一种方式继续
   async function setLoginMode(mode) {
     if (mode !== 'qr' && mode !== 'phone') return;
     if (mode === loginMode) { paintLoginMode(); return; }
     loginMode = mode;
-    try { store.set('tgdrama.loginMode', mode); } catch (e) {   }
+    try { store.set('tgdrama.loginMode', mode); } catch (e) { /* ignore */ }
     modePushed = true;
     var msgEl = $('#login-msg');
     if (msgEl) msgEl.textContent = '';
@@ -825,9 +873,9 @@ h1{font-size:18px;margin:0;letter-spacing:.5px}
     if (mode === 'qr') loadQR();
   }
 
-  
-  
-  
+  // openLogin 打开/关闭登录层。个别宿主内核与设计模式包装会让行内脚本执行时
+  // 短暂查不到登录层元素（getElementById 返回 null 但元素稍后出现），
+  // 这里用短重试兜底：未就绪就稍候重入，保证「点去登录必然弹出」。
   function openLogin(show, tries) {
     var sheet = document.getElementById('login-sheet');
     if (!sheet) {
@@ -841,7 +889,7 @@ h1{font-size:18px;margin:0;letter-spacing:.5px}
       var msgEl = $('#login-msg');
       if (msgEl) msgEl.textContent = '';
       paintLoginMode();
-      checkAuth(); 
+      checkAuth(); // 打开即拉一次状态，随后由动态轮询接管
     } else {
       stopLoginTimers();
     }
@@ -855,9 +903,9 @@ h1{font-size:18px;margin:0;letter-spacing:.5px}
     codeTimer = null;
   }
 
-  
-  
-  
+  // 二维码 token 只有 30 秒有效期。切回页面或窗口重新聚焦时立刻换一张：
+  // 浏览器在后台会把定时器节流到 1 分钟一次，用户这时回来扫码，
+  // 屏幕上很可能还是几分钟前的码，手机上必然报 AUTH_TOKEN_EXPIRED。
   function refreshQrIfStale() {
     if (!loginOpen || loginMode !== 'qr') return;
     if (state.auth && state.auth.authorized) return;
@@ -877,19 +925,19 @@ h1{font-size:18px;margin:0;letter-spacing:.5px}
     var img = $('#qr-img');
     var hint = $('#qr-hint');
     if (!img || !hint) { qrTimer = setTimeout(loadQR, 500); return; }
-    
+    // 图片还没出来时先给中性提示，避免残留上一种登录方式的错误文案
     if (img.classList.contains('hidden')) {
       hint.classList.remove('hidden');
       hint.textContent = '正在获取二维码…';
     }
     var d = null;
     try {
-      
-      
+      // 先问 JSON 接口：未就绪时会返回可读的原因，避免 <img> 直接显示裂图；
+      // PNG 以 data URL 内联在响应里（部分广告拦截扩展会拦 qr.png 图片请求）
       d = await api('/api/account/qr');
     } catch (e) {
-      
-      
+      // 屏幕上已经有一张能扫的码时不要撤掉它（用户可能正对着它扫）：
+      // 「即将过期/正在刷新」这类临时失败安静重试即可，只有还没有图时才提示。
       if (img.classList.contains('hidden')) {
         hint.classList.remove('hidden');
         hint.textContent = (e && e.message) || '二维码生成中…';
@@ -897,7 +945,7 @@ h1{font-size:18px;margin:0;letter-spacing:.5px}
       qrTimer = setTimeout(loadQR, 2000);
       return;
     }
-    
+    // 同一个 token 重复轮询时没必要重设 src（会闪一下），只续下一次刷新
     var url = (d && d.url) || '';
     if (url && url === lastQrURL && !img.classList.contains('hidden')) {
       qrRefreshTimer = setTimeout(loadQR, nextQrDelay(d));
@@ -920,31 +968,31 @@ h1{font-size:18px;margin:0;letter-spacing:.5px}
     img.src = (d && d.img) ? d.img : (BASE + '/api/account/qr.png?t=' + Date.now());
   }
 
-  
-  
-  
-  
+  // nextQrDelay 按二维码真实过期时间算下一次换码的间隔：token 只有 30 秒有效期，
+  // 固定 20 秒轮询会让屏幕上留着一张只剩几秒的码，用户这时候扫+手机确认就超时
+  // （手机端弹出 AUTH_TOKEN_EXPIRED）。这里贴着到期时刻才换码：
+  // 换早了会主动废掉一张其实还能扫的码，换晚了屏幕上是死码，两头都不行。
   function nextQrDelay(d) {
     var exp = (d && d.expires) || 0;
     if (!exp) return 15000;
     var left = exp * 1000 - Date.now() - 1000;
     if (left < 2000) return 2000;
-    
-    
+    // 上限 10 秒：token 寿命只有 30 秒，屏幕上的码越新，用户扫完到手机点确认
+    // 这段路程就越不会撞上过期（AUTH_TOKEN_EXPIRED）。后端 PNG 有缓存，多刷几次几乎零成本。
     if (left > 10000) return 10000;
     return left;
   }
 
-  
+  // 按后端阶段刷新登录面板：账号登录时自动切到账号面板并聚焦对应输入框
   function applyAuthPhase(st) {
     var phase = (st && st.phase) || 'none';
     var msg = (st && st.message) || '';
     var pwBox = $('#password-box'), sub = $('#login-sub');
     var sendBtn = $('#code-send'), codeInput = $('#code-input');
-    if (!pwBox || !sub || !sendBtn || !codeInput) return; 
+    if (!pwBox || !sub || !sendBtn || !codeInput) return; // 登录层 DOM 未就绪，等下次轮询
     var isPhonePhase = phase === 'need_phone' || phase === 'sending_code' || phase === 'need_code';
-    
-    
+    // need_phone 只是「后端在等手机号」，还没发出任何验证码，不必强抢前端已选的登录方式；
+    // 真正发过验证码（sending_code/need_code）才把界面钉在账号登录上，免得丢掉已发出的验证码。
     var forcePhone = phase === 'sending_code' || phase === 'need_code';
     if (forcePhone && loginMode !== 'phone') {
       loginMode = 'phone';
@@ -972,7 +1020,7 @@ h1{font-size:18px;margin:0;letter-spacing:.5px}
     if (phase === 'need_code' && phase !== lastAuthPhase && !codeTimer) {
       startCodeCountdown(60);
     }
-    
+    // 后端提示有变化才覆盖；后端已清空时把上一次写入的文案也清掉，避免残留旧错误
     var msgEl = $('#login-msg');
     if (msgEl) {
       if (msg) {
@@ -986,7 +1034,7 @@ h1{font-size:18px;margin:0;letter-spacing:.5px}
     lastAuthPhase = phase;
   }
 
-  
+  // 验证码重发倒计时
   function startCodeCountdown(sec) {
     clearInterval(codeTimer);
     var left = sec;
@@ -1007,7 +1055,7 @@ h1{font-size:18px;margin:0;letter-spacing:.5px}
     codeTimer = setInterval(tick, 1000);
   }
 
-  
+  // 账号登录：提交手机号，Telegram 会发验证码
   async function sendLoginCode() {
     var msg = $('#login-msg');
     var phone = ($('#phone-input').value || '').trim().replace(/[\s-]/g, '');
@@ -1040,9 +1088,9 @@ h1{font-size:18px;margin:0;letter-spacing:.5px}
     }
   }
 
-  
-  
-  
+  // 登录层交互用「事件委托」绑定在 document 上：委托目标永远存在，
+  // 不依赖任何单个元素的解析时序（个别宿主内核/包装环境会在行内脚本
+  // 执行时短暂查不到后加入的元素，按元素绑定会随机拿到 null）。
   function loginLayerClick(e) {
     var t = e.target;
     if (!t || !t.closest) return;
@@ -1063,7 +1111,7 @@ h1{font-size:18px;margin:0;letter-spacing:.5px}
   document.addEventListener('click', loginLayerClick);
   document.addEventListener('keydown', loginLayerKeydown);
 
-  
+  // 提交两步验证密码
   async function submitLoginPassword() {
     var msg = $('#login-msg');
     if (msg) msg.textContent = '';
@@ -1075,13 +1123,13 @@ h1{font-size:18px;margin:0;letter-spacing:.5px}
     }
   }
 
-  
+  // dismissLogin 手动关闭登录层：本次加载不再自动弹出（横幅可随时再打开）
   function dismissLogin() {
     loginAutoTried = true;
     openLogin(false);
   }
 
-  
+  // tryAutoOpenLogin 未登录时自动弹出登录层（每页加载至多一次；退出登录后重置）
   function tryAutoOpenLogin() {
     if (loginAutoTried || loginOpen) return;
     if (state.auth && state.auth.authorized) return;
@@ -1089,10 +1137,10 @@ h1{font-size:18px;margin:0;letter-spacing:.5px}
     openLogin(true);
   }
 
-  
-  
-  
-  
+  // syncLoginModeWithBackend 前后端登录方式不一致时，把本机偏好推给后端。
+  // 典型场景：上次在手机端用过账号登录，后端把 auth_mode 记成 phone，PC 端打开登录层
+  // 却只显示扫码面板 —— /api/account/qr 会一直返回「当前是账号登录」，扫码登录就失效了。
+  // 每次打开登录层只推一次（modePushed），且后端正在等输入时不打断，避免丢掉已发出的验证码。
   function syncLoginModeWithBackend(st) {
     if (!loginOpen || modePushed) return;
     var backendMode = (st && st.mode) || '';
@@ -1116,14 +1164,14 @@ h1{font-size:18px;margin:0;letter-spacing:.5px}
       if (st && st.authorized) {
         banner.hidden = true;
         $('sub').textContent = '已登录 Telegram · 实时同步';
-        
+        // 登录成功（可能在登录层里完成）→ 收起登录层并恢复收藏角标
         if (loginOpen) {
           openLogin(false);
           toast('登录成功');
           refreshFavBadge();
         }
         maybeShowRecPrompt();
-        updateRecBanner();
+        refreshChannelState();
         return;
       }
       banner.hidden = false;
@@ -1141,7 +1189,7 @@ h1{font-size:18px;margin:0;letter-spacing:.5px}
       var go = $('banner-go');
       if (go) go.onclick = function () { openLogin(true); };
       $('sub').textContent = '未登录 · 点击去登录';
-      tryAutoOpenLogin(); 
+      tryAutoOpenLogin(); // 未登录自动弹出登录层（首要引导，否则无法播放）
       if (loginOpen) {
         applyAuthPhase(st);
         syncLoginModeWithBackend(st);
@@ -1155,6 +1203,11 @@ h1{font-size:18px;margin:0;letter-spacing:.5px}
   function renderTabs() {
     var tabs = $('tabs');
     var html = '';
+    // 排序页签：固定在「历史」前面；榜单模式用不上排序，直接隐藏
+    if (state.mode !== 'rank') {
+      html += '<button class="chip sort-chip' + (state.sortMode === 'episodes' ? ' on' : '') + '" id="sort-chip"' +
+        ' title="切换排序方式">' + (state.sortMode === 'episodes' ? '集数↓' : '自然↑') + '</button>';
+    }
     var items = [
       { k: 'all', n: '全部' },
       { k: 'history', n: '🕘 历史' },
@@ -1169,10 +1222,15 @@ h1{font-size:18px;margin:0;letter-spacing:.5px}
         '" data-mode="' + it.k + '">' + it.n + num + '</button>';
     });
 
-    html += '<button class="chip sort-chip' + (state.sortMode === 'episodes' ? ' on' : '') + '" id="sort-chip"' +
-      ' title="切换排序方式">' + (state.sortMode === 'episodes' ? '集数↓' : '自然↑') + '</button>';
+    // 排行榜页签：固定在「收藏」之后、分类之前，只展示抓到条目的榜单
+    // （顺序由 loadRankings 按条数排好：数量多的在前）
+    (state.rankBoards || []).forEach(function (b) {
+      var on = state.mode === 'rank' && state.rankKey === b.key;
+      html += '<button class="chip rank-chip' + (on ? ' on' : '') + '" data-mode="rank"' +
+        ' data-rank="' + esc(b.key) + '">🔥 ' + esc(b.name) + '</button>';
+    });
+
     if (state.mode === 'all') {
-      html += '<button class="chip' + (!state.tag ? ' on' : '') + '" data-tag="">全部</button>';
       state.tags.forEach(function (t) {
         html += '<button class="chip' + (state.tag === t.name ? ' on' : '') +
           '" data-tag="' + esc(t.name) + '">' + esc(t.name) +
@@ -1188,6 +1246,7 @@ h1{font-size:18px;margin:0;letter-spacing:.5px}
         if (b.dataset.mode) {
           state.mode = b.dataset.mode;
           state.tag = '';
+          state.rankKey = b.dataset.rank || '';
         } else {
           state.mode = 'all';
           state.tag = b.dataset.tag || '';
@@ -1234,8 +1293,14 @@ h1{font-size:18px;margin:0;letter-spacing:.5px}
     if (state.mode === 'history' && s.progress) {
       prog = '<div class="progress"><i style="width:' + Math.round(s.progress * 100) + '%"></i></div>';
     }
+    // 排行榜名次角标：前三名 TOP1~TOP3 单独配色，其余显示 #名次
+    var rank = '';
+    if (state.mode === 'rank' && s.rank) {
+      rank = '<span class="rank-ribbon' + (s.rank <= 3 ? ' t' + s.rank : '') + '">' +
+        (s.rank <= 3 ? 'TOP' + s.rank : '#' + s.rank) + '</span>';
+    }
     return '<div class="card" data-idx="' + i + '">' +
-      '<div class="cover">' + cover + upd +
+      '<div class="cover">' + cover + upd + rank +
       '<button class="cover-play" data-idx="' + i + '" title="全屏播放">▶</button>' +
       (badge ? '<span class="badge">' + esc(badge) + '</span>' : '') + prog + '</div>' +
       '<div class="name">' + esc(s.show_name || s.name) + '</div>' +
@@ -1243,6 +1308,12 @@ h1{font-size:18px;margin:0;letter-spacing:.5px}
   }
 
   function metaText(s) {
+    if (state.mode === 'rank') {
+      var nr = [];
+      if (s.heat) nr.push(s.heat);
+      if (s.ep_count) nr.push(s.ep_count + '集');
+      return nr.join(' · ') || '短剧';
+    }
     if (state.mode === 'history') {
       var pct = Math.round((s.progress || 0) * 100);
       return '第' + s.episode_no + '集 · ' + (s.finished ? '已看完' : (pct + '%'));
@@ -1266,9 +1337,11 @@ h1{font-size:18px;margin:0;letter-spacing:.5px}
     if (!state.list.length) {
       $('empty').hidden = false;
       $('more').hidden = true;
+      syncEmptyCta();
       return;
     }
     $('empty').hidden = true;
+    syncEmptyCta();
     var start = reset ? 0 : grid.children.length;
     var html = '';
     for (var i = start; i < state.list.length; i++) html += cardHTML(state.list[i], i);
@@ -1288,7 +1361,74 @@ h1{font-size:18px;margin:0;letter-spacing:.5px}
         if (item) quickPlay(item.show_id || item.id, item);
       };
     });
-    $('more').hidden = state.list.length >= state.total || state.mode === 'history';
+    $('more').hidden = state.list.length >= state.total ||
+      state.mode === 'history' || state.mode === 'rank';
+  }
+
+  // ---- 排行榜：数据来自 /api/rankings，条目已与本地片库匹配过 ----
+  function rankBoardByKey(key) {
+    var list = state.rankBoards || [];
+    for (var i = 0; i < list.length; i++) {
+      if (list[i].key === key) return list[i];
+    }
+    return null;
+  }
+
+  // 榜单条目拍平成卡片直接能渲染的对象：show 的字段 + rank/heat/url
+  function fillRankList() {
+    var b = rankBoardByKey(state.rankKey);
+    state.rankMeta = b || null;
+    var items = (b && b.items) || [];
+    state.list = items.map(function (it) {
+      var s = it.show || {};
+      var o = {};
+      for (var k in s) {
+        if (Object.prototype.hasOwnProperty.call(s, k)) o[k] = s[k];
+      }
+      o.rank = it.rank;
+      o.heat = it.heat || '';
+      o.url = it.url || '';
+      o.title = it.title || '';
+      o.show_name = s.name || it.title || '';
+      return o;
+    });
+    state.total = state.list.length;
+  }
+
+  function rankSubText() {
+    var b = state.rankMeta;
+    if (!b) return '排行榜';
+    var t = b.name;
+    if (typeof b.matched === 'number' && typeof b.total === 'number') {
+      t += ' · 命中 ' + b.matched + ' / ' + b.total + ' 条';
+    }
+    if (!b.ok && b.error) t += ' · 本次更新失败';
+    return t;
+  }
+
+  // 只保留抓到条目的榜单页签；条数变化时重绘页签（首次抓取是后台进行的，可能晚到）
+  function loadRankings() {
+    return api('/api/rankings').then(function (d) {
+      var boards = ((d && d.boards) || []).filter(function (b) {
+        return (b.total || 0) > 0;
+      });
+      // 数量多的榜单排前面：先比可播命中数，一样多再比榜单总条数
+      boards.sort(function (a, b) {
+        return (b.matched || 0) - (a.matched || 0) || (b.total || 0) - (a.total || 0);
+      });
+      var changed = boards.length !== state.rankBoards.length;
+      state.rankBoards = boards;
+      if (!rankBoardByKey(state.rankKey)) state.rankKey = boards.length ? boards[0].key : '';
+      if (changed) renderTabs();
+      if (state.mode === 'rank') {
+        fillRankList();
+        renderList(true);
+        $('empty-msg').textContent = (state.rankMeta && state.rankMeta.total)
+          ? '榜单里的剧本地库还没有，先同步频道再来看看' : '榜单还没准备好';
+        $('sub').textContent = rankSubText();
+      }
+      return boards.length;
+    }).catch(function () { return state.rankBoards.length; });
   }
 
   function load(append) {
@@ -1298,7 +1438,12 @@ h1{font-size:18px;margin:0;letter-spacing:.5px}
     $('sub').textContent = '加载中…';
 
     var p;
-    if (state.mode === 'history') {
+    if (state.mode === 'rank') {
+      // 榜单是一次性拿到的完整列表：不翻页，数据还没到就先拉一次
+      p = state.rankBoards.length
+        ? Promise.resolve().then(fillRankList)
+        : loadRankings().then(fillRankList);
+    } else if (state.mode === 'history') {
       p = api('/api/history?limit=50').then(function (d) {
         state.list = d.list || [];
         if (state.sortMode === 'episodes') {
@@ -1331,8 +1476,16 @@ h1{font-size:18px;margin:0;letter-spacing:.5px}
     }
 
     var chain = p.then(function () {
+      $('empty-msg').textContent = state.mode === 'rank'
+        ? ((state.rankMeta && state.rankMeta.total) ? '榜单里的剧本地库还没有，先同步频道再来看看' : '榜单还没准备好')
+        : '暂无内容';
       renderList(!append);
-      if (state.mode === 'all' && !state.keyword) {
+      if (state.mode === 'rank') {
+        $('sub').textContent = rankSubText();
+      } else if (state.mode === 'all' && !state.keyword) {
+        // 「全部」是不是真的一部都没有：空状态里的「加入推荐频道」入口靠它判断
+        state.libEmpty = state.total === 0;
+        syncEmptyCta();
         $('sub').textContent = '共 ' + state.total + ' 部 · 实时同步';
       } else if (state.mode === 'favorites') {
         $('sub').textContent = '收藏 ' + state.total + ' 部';
@@ -1344,7 +1497,7 @@ h1{font-size:18px;margin:0;letter-spacing:.5px}
     }).catch(function (e) {
       $('sub').textContent = '加载失败';
       $('empty').hidden = false;
-      $('empty').textContent = e.message || '加载失败，请检查插件是否运行';
+      $('empty-msg').textContent = e.message || '加载失败，请检查插件是否运行';
     }).then(function () { state.loading = false; });
     return chain;
   }
@@ -1650,19 +1803,19 @@ h1{font-size:18px;margin:0;letter-spacing:.5px}
 
   var P = {
     player: null, video: null, ep: null, show: null, episodes: [], idx: -1,
-    
-    
-    
-    immersive: false, land: false,
+    // immersive 沉浸态（点了全屏，无论原生全屏是否成功都算）；land 横屏视频标记
+    // （元数据到手即定，不依赖播放中途探测）。旋转只看 immersive+land+窗口竖屏，
+    // 对齐参考项目 rotfs：宿主谎报锁横屏/原生全屏成败都不影响兜底旋转。
+    immersive: false, land: false, fsOn: false,
     lines: [], defaultChat: 0, chat: 0, src: '', rate: 1, fast: false, prevRate: 1,
     dragging: false, idleT: 0, hintT: 0, tapAt: 0, holdT: 0, touch: null,
     seq: 0, resumeAt: 0, userPaused: false, ended: false,
 
     lastPos: 0, tries: 0, lastErrAt: 0, stallT: 0, stallPos: 0, skipResume: false, recovering: false,
-    
-    
+    // bootT 起播看门狗；playedOnce 本次换源后是否真正出过画面；
+    // retriedFromStart 本集是否已经用过「从头重试」；dragPct 拖动中预览的进度比例
     bootT: 0, playedOnce: false, retriedFromStart: false, dragPct: null,
-    
+    // 清晰度：quality=0 表示自动，否则是变体 ID；curVq 是当前 src 实际使用的变体
     quality: 0, curVq: 0, qualities: [], qseq: 0, qualityT: 0
   };
 
@@ -1713,8 +1866,8 @@ h1{font-size:18px;margin:0;letter-spacing:.5px}
       s.onload = function () { resolve(window.videojs || null); };
       s.onerror = function () {
         vjsLoading = null;
-        
-        
+        // 宿主托管/侧载时 BASE 可能先被错定成宿主端口（拉回来的是 html，浏览器报
+        // SyntaxError: Unexpected token '<'），换成默认端口再试一次
         if (BASE !== DEFAULT_BASE) {
           BASE = DEFAULT_BASE;
           var css = document.getElementById('vjs-css');
@@ -1729,8 +1882,8 @@ h1{font-size:18px;margin:0;letter-spacing:.5px}
     return vjsLoading;
   }
 
-  
-  
+  // enterFullscreen 尝试原生全屏：成功（含已在全屏）返回 true，失败/无 API 返回 false。
+  // 同步路径直接返回布尔；异步路径返回 promise<布尔>，调用方据此降级到 CSS 全屏。
   function enterFullscreen(el) {
     if (!el || isLayerFullscreen()) return true;
     var fn = el.requestFullscreen || el.webkitRequestFullscreen || el.msRequestFullscreen;
@@ -1747,67 +1900,177 @@ h1{font-size:18px;margin:0;letter-spacing:.5px}
     try { fn.call(document); } catch (e) {  }
   }
 
-  
-  
-  
-  
-  
-  
+  // 横屏视频的整屏翻转：以 CSS 翻转为主力路径，方向锁只作锦上添花。
+  // 参考 duoju duanju 播放器的 rotfs 方案——screen.orientation.type 在部分宿主里
+  // 会谎报 landscape，只有可视区宽高比不会，所以「是否真的转过去了」一律按宽高比判。
+  // vpSize 取真实可视区：宿主 WebView 里 window.innerHeight 常被状态栏/宿主自带
+  // UI 撑大，100vh 也就跟着不准；documentElement.clientWidth/Height 才是布局视口，
+  // 优先用它，取不到再退回 innerWidth/innerHeight。
+  function vpSize() {
+    var d = document.documentElement || {};
+    var w = Math.round(d.clientWidth || 0), h = Math.round(d.clientHeight || 0);
+    if (!w || !h) {
+      w = Math.round(window.innerWidth || 0);
+      h = Math.round(window.innerHeight || 0);
+    }
+    return { w: w, h: h };
+  }
+  // applyRotateGeom 把翻转后的盒子对齐到竖屏可视区：绕左上角转 90° 后盒子宽高
+  // 互换（宽=视口高、高=视口宽），再右移一个视口宽度，就正好落在 (0,0)-(w,h)。
+  // 目标是内层 #rp-slide（不是被全屏化的 #rp-layer）：UA 的 :fullscreen 规则只
+  // 清洗全屏元素自身，永远碰不到子元素的 transform；样式同时写 CSS 变量（样式
+  // 表用）和内联 !important——这是「最强劲」的一层保险。
+  var ROT_STYLE_PROPS = ['position', 'left', 'top', 'right', 'bottom', 'margin',
+    'width', 'height', 'transform-origin', 'transform'];
+  function applyRotateGeom() {
+    var el = $('rp-slide');
+    if (!el) return;
+    var v = vpSize();
+    el.style.setProperty('--rot-w', v.h + 'px');
+    el.style.setProperty('--rot-h', v.w + 'px');
+    el.style.setProperty('--rot-x', v.w + 'px');
+    el.style.setProperty('--rot-y', '0px');
+    var st = el.style;
+    st.setProperty('position', 'absolute', 'important');
+    st.setProperty('left', '0px', 'important');
+    st.setProperty('top', '0px', 'important');
+    st.setProperty('right', 'auto', 'important');
+    st.setProperty('bottom', 'auto', 'important');
+    st.setProperty('margin', '0', 'important');
+    st.setProperty('width', v.h + 'px', 'important');
+    st.setProperty('height', v.w + 'px', 'important');
+    st.setProperty('transform-origin', '0 0', 'important');
+    st.setProperty('transform', 'translate(' + v.w + 'px,0) rotate(90deg)', 'important');
+  }
+  function clearRotateGeom() {
+    // 目标必须与 applyRotateGeom 一致（#rp-slide），否则退出翻转后内联几何会残留。
+    var el = $('rp-slide');
+    if (!el) return;
+    var props = ROT_STYLE_PROPS.concat(['--rot-w', '--rot-h', '--rot-x', '--rot-y']);
+    for (var i = 0; i < props.length; i++) {
+      try { el.style.removeProperty(props[i]); } catch (e) {  }
+    }
+    // 兼容旧版本残留：早期把几何写在播放层上，升级后也要能清干净。
+    var legacy = $('rp-layer');
+    if (legacy) {
+      for (var j = 0; j < ROT_STYLE_PROPS.length; j++) {
+        try { legacy.style.removeProperty(ROT_STYLE_PROPS[j]); } catch (e2) {  }
+      }
+    }
+  }
+  // updateLandFlag 判定当前集是不是横屏视频：优先播放器元数据，没就绪时用
+  // 清晰度/线路里的分辨率兜底。判不出来（null）时保持上一次结论——换集瞬间
+  // videoWidth 会归零，若在这里写回 false，刚做好的翻转会被自己抖掉。
   function updateLandFlag() {
-    var wide = false;
+    var wide = null;
     try {
       var v = P.video;
       if (v && v.videoWidth > 0 && v.videoHeight > 0) {
         wide = v.videoWidth > v.videoHeight;
       }
-      if (!wide) {
+      if (wide === null) {
         var mains = (P.qualities || []).filter(function (q) { return q.is_main; });
-        if (mains.length && mains[0].width > mains[0].height) wide = true;
+        if (mains.length) {
+          var qw = Number(mains[0].width) || 0, qh = Number(mains[0].height) || 0;
+          if (qw > 0 && qh > 0) wide = qw > qh;
+        }
+      }
+      if (wide === null) {
         for (var i = 0; i < P.lines.length; i++) {
-          var l = P.lines[i];
-          if (l.width > 0 && l.height > 0) {
-            if (l.width > l.height) wide = true;
-            break;
-          }
+          var l = P.lines[i] || {};
+          // 接口里的分辨率有可能是字符串（"1080" > "720" 按字典序比会得到 false），
+          // 一律先转成数字再比，免得把横屏剧误判成竖屏。
+          var lw = Number(l.width) || 0, lh = Number(l.height) || 0;
+          if (lw > 0 && lh > 0) { wide = lw > lh; break; }
         }
       }
     } catch (e) {  }
-    P.land = wide;
+    if (wide !== null) P.land = wide;
   }
+  // lockLandscapeForVideo 横屏视频进全屏时：先立刻按可视区做 CSS 翻转（主力路径，
+  // 不等方向锁、也不看原生全屏成败——多数壳子把 Activity 锁在竖屏，lock 不是被拒
+  // 就是谎报成功），再顺手试一次方向锁；万一真锁成了，resize/orientationchange 会
+  // 把翻转自动摘掉，不会双重旋转。
   function lockLandscapeForVideo() {
     updateLandFlag();
-    if (!P.land) { setCssRotate(false); return; }
+    syncLandscapeRotate();
     try {
-      if (screen.orientation && screen.orientation.lock) {
+      if (P.land && screen.orientation && screen.orientation.lock) {
         var p = screen.orientation.lock('landscape');
         if (p && p.catch) p.catch(function () {  });
       }
     } catch (e) {  }
-    
-    setTimeout(syncLandscapeRotate, 300);
-    setTimeout(syncLandscapeRotate, 800);
+    // 原生全屏动画/宿主转屏都是异步的：多打几个时间点复核，谁先到位谁生效
+    setTimeout(syncLandscapeRotate, 120);
+    setTimeout(syncLandscapeRotate, 360);
+    setTimeout(syncLandscapeRotate, 900);
+    setTimeout(syncLandscapeRotate, 1600);
+    armRotateWatch();
   }
-  
-  
-  
+  // armRotateWatch 沉浸期间持续盯梢（每 320ms 一次）：部分壳子在原生全屏接管、
+  // 隐藏系统栏或自行重排时会冲掉内联样式甚至摘掉类；只要「应该是横屏翻转」却
+  // 不是，就立刻补回来，确保翻转是稳态而不是闪一下。退出沉浸态由
+  // unlockOrientation 清掉定时器。
+  var rotWatchT = 0, rotWatchN = 0;
+  function armRotateWatch() {
+    if (rotWatchT) return;
+    rotWatchN = 0;
+    rotWatchT = setInterval(function () {
+      rotWatchN++;
+      var el = $('rp-layer');
+      if (rotWatchN > 90 || !el || el.hidden || !P.immersive) {
+        clearInterval(rotWatchT);
+        rotWatchT = 0;
+        return;
+      }
+      syncLandscapeRotate();
+      var s = $('rp-slide');
+      if (P.land && el.classList.contains('css-rotate') && s && !s.style.getPropertyValue('width')) {
+        applyRotateGeom();
+      }
+    }, 320);
+  }
+  // syncLandscapeRotate 按当前实际状态校正 CSS 翻转：沉浸态 + 横屏视频 + 窗口
+  // 仍竖屏 → 翻转；宿主真把窗口转成横屏（宽>高）就自动放手。
+  // resize / orientationchange / fullscreenchange 都会调它，实际方向一变就跟上。
   function syncLandscapeRotate() {
-    if ($('rp-layer').hidden) { setCssRotate(false); return; }
-    var on = P.immersive && P.land && window.innerWidth <= window.innerHeight;
+    var el = $('rp-layer');
+    if (!el || el.hidden) { setCssRotate(false); return; }
+    var v = vpSize();
+    // 视口读数偶尔会骗人（宿主自带 UI、原生全屏把 documentElement 撑成横的），
+    // 未翻转时以播放层自身的外接矩形为准，它才是真正要铺满的那块区域。
+    if (!el.classList.contains('css-rotate')) {
+      var r = el.getBoundingClientRect();
+      if (r.width > 0 && r.height > 0 && Math.abs(Math.round(r.width) - v.w) > 2) {
+        v = { w: Math.round(r.width), h: Math.round(r.height) };
+      }
+    }
+    var on = !!P.immersive && !!P.land && v.w > 0 && v.w <= v.h;
     setCssRotate(on);
   }
   function setCssRotate(on) {
-    try { $('rp-layer').classList.toggle('css-rotate', !!on); } catch (e) {  }
+    try {
+      var el = $('rp-layer');
+      if (on) {
+        applyRotateGeom();
+        el.classList.add('css-rotate');
+      } else {
+        el.classList.remove('css-rotate');
+        clearRotateGeom();
+      }
+    } catch (e) {  }
   }
   function unlockOrientation() {
     try { if (screen.orientation && screen.orientation.unlock) screen.orientation.unlock(); } catch (e) {  }
+    if (rotWatchT) { clearInterval(rotWatchT); rotWatchT = 0; }
     setCssRotate(false);
   }
   function isLayerFullscreen() {
     return document.fullscreenElement === $('rp-layer') ||
       document.webkitFullscreenElement === $('rp-layer');
   }
-  
-  
+  // relockOrientationIfFullscreen 进全屏那一刻可能拿不到视频宽高（线路/清晰度
+  // 列表还没回来），land 判不出来就不转；元数据或列表到手后在这里补判。
   function relockOrientationIfFullscreen() {
     updateLandFlag();
     if (!P.immersive) return;
@@ -1971,8 +2234,8 @@ h1{font-size:18px;margin:0;letter-spacing:.5px}
     var pos = v.currentTime, dur = v.duration;
     if (!isFinite(pos) || pos <= 0 || !isFinite(dur) || dur <= 0) return;
 
-    
-    
+    // 不再把回退的进度改写成历史最高点：拖回重看是正常操作，
+    // 上报的位置就应该跟着 currentTime 走，否则下次续播会跳回拖动前的位置
     var ps = state.playingEp;
     if (!ps || !ps.ep || ps.ep.id !== pe.id) {
       ps = state.playingEp = { ep: pe, lastSentAt: 0 };
@@ -2152,11 +2415,11 @@ h1{font-size:18px;margin:0;letter-spacing:.5px}
     bumpIdle();
   }
 
-  
-  
-  
-  
-  
+  // startPlayback 换源后的首次起播。从列表点播进来要经过 fetch 才走到这里，
+  // 用户手势可能已经失效，浏览器会以 NotAllowedError 拒绝 play()：此时必须
+  // 摘掉「缓冲中」、亮出大播放键，否则缓冲气泡（z-index 更高）一直盖着播放键，
+  // 看门狗又把 paused 视为「等用户点播」，界面会永远停在缓冲态像卡死。
+  // 老内核 play() 没有返回值、拿不到拒绝事件，用「有数据但仍 paused」兜底判定。
   function startPlayback(s) {
     var v = P.video;
     if (!v) return;
@@ -2166,8 +2429,8 @@ h1{font-size:18px;margin:0;letter-spacing:.5px}
       pr.catch(function (err) {
         if (!P.video || P.video !== v) return;
         if (err && err.name === 'NotAllowedError') { blockedAutoplay(s); return; }
-        
-        
+        // 其余失败（源坏了/中断）：坏源随后会触发 video 的 error 事件走自动恢复，
+        // 这里只把界面从缓冲态切到可点播的暂停态，与旧行为一致。
         s.classList.add('paused');
       });
       return;
@@ -2182,16 +2445,16 @@ h1{font-size:18px;margin:0;letter-spacing:.5px}
     s.classList.add('paused');
   }
 
-  
-  
-  
+  // armBootWatchdog 起播看门狗：换源之后一直没有出画面就当作失败进入自动恢复。
+  // 没有它时，首块数据如果卡在服务端/网络，界面会永远停在「缓冲中」，
+  // 用户点重试也只是重复同样卡死的路径。
   function armBootWatchdog(ms) {
     clearTimeout(P.bootT);
     P.bootT = setTimeout(function () {
       P.bootT = 0;
       if (!P.video || P.ended || P.ep == null || P.playedOnce) return;
       if (document.hidden) { armBootWatchdog(10000); return; }
-      
+      // 自动播放被策略拦下（video 还是 paused）不算卡死，等用户手动点播
       if (P.video.paused && !P.video.error) return;
       onMediaError();
     }, ms || 15000);
@@ -2235,8 +2498,8 @@ h1{font-size:18px;margin:0;letter-spacing:.5px}
     P.resumeAt = fromStart ? 0 : (P.lastPos > 3 ? P.lastPos : 0);
     P.skipResume = !!fromStart;
 
-    
-    
+    // 不加 cache-buster：换源地址保持不变，浏览器能复用已缓存的字节，
+    // 也让服务端块缓存直接命中，重试不再从头向 Telegram 拉流
     var base = P.src || playUrl(P.ep, P.chat);
     try { setSrc(base); } catch (e) {  }
     setTimeout(function () { P.recovering = false; }, 1200);
@@ -2249,8 +2512,8 @@ h1{font-size:18px;margin:0;letter-spacing:.5px}
     if (now - P.lastErrAt > 20000) P.tries = 0;
     P.lastErrAt = now;
     P.playingSince = 0;
-    
-    
+    // 限流探测：502/503 里带 Retry-After 说明是账号级 FLOOD_WAIT，
+    // 切线路/重试都没用，进入倒计时自动恢复，而不是走「播不了」错误态。
     probeFloodWait(function (wait) {
       if (wait > 0) {
         startFloodCountdown(wait);
@@ -2260,8 +2523,8 @@ h1{font-size:18px;margin:0;letter-spacing:.5px}
     });
   }
 
-  
-  
+  // probeFloodWait 用 HEAD 探测播放地址：只有首块还没写出去的失败才带 Retry-After。
+  // 探测请求本身很小（HEAD 不回体），不会加重限流。
   function probeFloodWait(done) {
     if (!P.ep || P.floodProbing) { done(0); return; }
     P.floodProbing = true;
@@ -2277,7 +2540,7 @@ h1{font-size:18px;margin:0;letter-spacing:.5px}
     }).catch(function () { P.floodProbing = false; done(0); });
   }
 
-  
+  // startFloodCountdown 限流倒计时：到期后自动原地续播（保进度）。
   function startFloodCountdown(wait) {
     clearStallTimer();
     P.tries = 0;
@@ -2285,7 +2548,7 @@ h1{font-size:18px;margin:0;letter-spacing:.5px}
     s.classList.remove('error', 'playing');
     s.classList.add('loading');
     var tick = function (left) {
-      if (!P.ep) return; 
+      if (!P.ep) return; // 播放器已关闭
       if (left <= 0) {
         P.recovering = true;
         P.resumeAt = P.lastPos > 3 ? P.lastPos : 0;
@@ -2300,7 +2563,7 @@ h1{font-size:18px;margin:0;letter-spacing:.5px}
     tick(wait);
   }
 
-  
+  // vqHeight 某个清晰度档位的高度（curVq=0 表示主版本，列表里是 -1）。
   function vqHeight(vq) {
     var want = vq === 0 ? -1 : vq;
     for (var i = 0; i < (P.qualities || []).length; i++) {
@@ -2311,8 +2574,8 @@ h1{font-size:18px;margin:0;letter-spacing:.5px}
     return 0;
   }
 
-  
-  
+  // lowerQualityVariant 当前播放档位之下的最近一档（没有则 null）。
+  // 只在 Telegram 提供了多清晰度（P.qualities ≥2）时才有降档空间。
   function lowerQualityVariant() {
     if ((P.qualities || []).length < 2) return null;
     var curH = vqHeight(P.curVq);
@@ -2331,16 +2594,16 @@ h1{font-size:18px;margin:0;letter-spacing:.5px}
 
   function proceedOnMediaError() {
     if (!P.ep || P.recovering) return;
-    
-    
-    
+    // 恢复顺序：原地重试（保进度）→ 降低分辨率重试（保进度）→ 切线路（保进度）
+    //   → 从头重试（最后手段，只做一次）→ 报错。
+    // 从头重试放最后且只做一次，否则反复失败时会不断「刷新重头开始播放」。
     if (P.tries < 1) {
       P.tries++;
       recoverSameLine(false);
       return;
     }
-    
-    
+    // 播放失败自动降分辨率：同集有更低清晰度时先降档重试（高码率/编码
+    // 兼容性是常见的失败原因），全部降完才切线路。
     if (P.tries < 2 && (P.qualities || []).length >= 2) {
       var lower = lowerQualityVariant();
       if (lower) {
@@ -2362,7 +2625,7 @@ h1{font-size:18px;margin:0;letter-spacing:.5px}
       P.chat = alt.chat_id;
       P.resumeAt = P.lastPos > 3 ? P.lastPos : 0;
       P.skipResume = false;
-      
+      // 换到另一条线路：清晰度回到自动并按新线路重新取列表
       P.quality = 0;
       P.curVq = 0;
       P.qualities = [];
@@ -2394,7 +2657,7 @@ h1{font-size:18px;margin:0;letter-spacing:.5px}
   function togglePlay() {
     if (!P.video) return;
     var slide = $('rp-slide');
-    
+    // 出错态下点播放 = 重试：不再对坏状态的 video 调 play()（那只会没有任何反应）
     if (slide.classList.contains('error') || P.video.error) {
       $('rp-retry').click();
       return;
@@ -2407,7 +2670,7 @@ h1{font-size:18px;margin:0;letter-spacing:.5px}
           slide.classList.add('paused');
           return;
         }
-        
+        // 其他失败（源已经坏了/网络断开）走自动恢复，而不是无声无息
         onMediaError();
       });
     } else {
@@ -2473,7 +2736,7 @@ h1{font-size:18px;margin:0;letter-spacing:.5px}
     }).join('');
   }
 
-  
+  // ---- 清晰度（对齐 Telegram Web：只有 alt_documents 提供多版本时才出现）----
   function qualityHeight(q) {
     var w = q.width || 0, h = q.height || 0;
     if (w > 0 && h > 0) return Math.min(w, h);
@@ -2485,12 +2748,12 @@ h1{font-size:18px;margin:0;letter-spacing:.5px}
     }
     return '';
   }
-  
-  
+  // Auto：按播放器实际显示高度 × 像素比选「够用的最小一档」，不够就取最高。
+  // 与 Telegram 的 Auto 一致的目标（不放大、不白耗流量），只是这里按尺寸而不是带宽估算。
   function pickAutoQuality() {
     var list = P.qualities || [];
     if (!list.length) return 0;
-    
+    // 默认中等清晰度：按高度降序取中间档（三档取 720P 类，两档取较低，一档唯一）
     var sorted = list.slice().sort(function (a, b) { return qualityHeight(b) - qualityHeight(a); });
     var mid = sorted.length >> 1;
     if (mid >= sorted.length) mid = sorted.length - 1;
@@ -2536,40 +2799,40 @@ h1{font-size:18px;margin:0;letter-spacing:.5px}
       P.qualities = (d && d.list) || [];
       renderQuality();
       relockOrientationIfFullscreen();
-      
+      // 首次拿到列表时让 Auto 生效：与当前实际播放的版本不同才换，避免无谓重载。
       if (!P.quality && P.qualities.length >= 2) {
         var pick = pickAutoQuality();
-        
-        
+        // 用 applyQuality(0) 而不是 applyQuality(pick)：自动档要保持 P.quality=0，
+        // 否则按钮会显示成手动选中的「720P」，菜单也不再勾选「自动」。
         if (pick !== P.curVq) applyQuality(0, true);
       }
     };
     api(qualitiesUrl(ep, chat)).then(apply).catch(function () {  });
-    
-    
+    // 服务端对没查过清晰度的来源做后台补查：3.5 秒后再拉一次，
+    // 新档位到手后自动套用中等档——默认播放卡在原片时自愈。
     setTimeout(function () {
       if (token !== P.qseq || !P.ep || P.ep.id !== ep.id) return;
       api(qualitiesUrl(ep, chat)).then(apply).catch(function () {  });
     }, 3500);
   }
 
-  
+  // reapplyAutoQuality 自动模式下播放器尺寸变化后重新选档；与当前一致就不打断播放。
   function reapplyAutoQuality() {
     if (!P.ep || P.quality || P.qualities.length < 2 || !P.video) return;
     if (P.qualities.length && pickAutoQuality() !== P.curVq) applyQuality(0, true);
   }
 
-  
+  // applyQuality 切换清晰度并保持播放进度；vq=0 表示自动。
   function applyQuality(vq, silent) {
     if (!P.ep) return;
     var pos = Math.max(P.lastPos || 0, P.video ? P.video.currentTime : 0);
     P.resumeAt = pos > 3 ? pos : 0;
     P.lastPos = pos;
     P.tries = 0;
-    
+    // 0=自动，-1=主版本（原始文件），>0=变体 ID
     P.quality = vq > 0 ? vq : (vq === -1 ? -1 : 0);
     var target = P.quality > 0 ? P.quality : (P.quality === -1 ? 0 : pickAutoQuality());
-    if (target === -1) target = 0; 
+    if (target === -1) target = 0; // 自动选到主版本时也走默认地址
     P.curVq = target;
     setSrc(playUrl(P.ep, P.chat, target));
     renderQuality();
@@ -2599,7 +2862,7 @@ h1{font-size:18px;margin:0;letter-spacing:.5px}
     P.lastPos = pos;
     P.tries = 0;
     P.chat = chat;
-    
+    // 切线路后清晰度重新按 Auto 判定（不同频道版本的可选清晰度可能不同）
     P.quality = 0;
     P.curVq = 0;
     P.qualities = [];
@@ -2639,7 +2902,7 @@ h1{font-size:18px;margin:0;letter-spacing:.5px}
     P.playingSince = 0;
     P.retriedFromStart = false;
     P.dragPct = null;
-    
+    // 换集回到自动清晰度
     P.quality = 0;
     P.curVq = 0;
     P.qualities = [];
@@ -2666,8 +2929,8 @@ h1{font-size:18px;margin:0;letter-spacing:.5px}
       if (d.progress && d.progress.position > 5 && !savedPosition(ep)) {
         state.epProgress = state.epProgress || {};
         state.epProgress[ep.id] = d.progress;
-        
-        
+        // 兜底续播：loadedmetadata 没等到进度时，由线路接口把位置带回来。
+        // 已看完的记录（位置贴着结尾）不要恢复，否则一进来就在片尾自动跳下一集
         if (P.video && P.video.currentTime < 1 && P.video.duration > 0 &&
             d.progress.position < P.video.duration - 8) {
           P.resumeAt = d.progress.position;
@@ -2723,7 +2986,7 @@ h1{font-size:18px;margin:0;letter-spacing:.5px}
     renderLines();
     renderEps();
 
-    
+    // 不再自动进全屏：由用户点「全屏」按钮决定（横屏剧在全屏里自动转横屏）
     loadEpisode(P.idx);
     bumpIdle();
   }
@@ -2755,8 +3018,8 @@ h1{font-size:18px;margin:0;letter-spacing:.5px}
     };
   }
 
-  
-  
+  // 侧载规则页在宿主里点播放：优先整部剧交给宿主播放器（fm.vodInline，带 mark 定位当前集），
+  // 其次只推当前集直链（fm.play），宿主两者都没有才用页面内置播放器。
   function pushToPlayer(ep, d) {
     if (!window.__TG_RULE_HOST__) return false;
     var fm = window.fm;
@@ -2776,7 +3039,7 @@ h1{font-size:18px;margin:0;letter-spacing:.5px}
       try {
         var ret = fm.vodInline(buildVod(ep, d));
         if (ret && typeof ret.then === 'function') {
-          
+          // 宿主内部失败时（解析不出直链等）退回单集推送，别让用户点了没反应
           ret.then(function () {
             toast('已交给系统播放器');
           }, function () {
@@ -2794,7 +3057,7 @@ h1{font-size:18px;margin:0;letter-spacing:.5px}
   function playEpisode(ep) {
     var d = state.show;
     if (!d || !ep) return;
-    
+    // 播放依赖登录会话取流：未登录/登录失效时先引导登录，不放行
     if (!(state.auth && state.auth.authorized)) {
       toast('请先登录 Telegram，登录后才能播放');
       loginAutoTried = false;
@@ -2832,7 +3095,7 @@ h1{font-size:18px;margin:0;letter-spacing:.5px}
 
   function closePlayer() {
     saveProgress(true);
-    
+    // 限流倒计时若在跑：tick 里的 P.ep 判空会在下一秒自然停止，这里再兜一层
     clearTimeout(P.floodT);
     P.floodProbing = false;
     disposePlayer();
@@ -2861,14 +3124,18 @@ h1{font-size:18px;margin:0;letter-spacing:.5px}
   $('rp-back').onclick = closePlayer;
   $('rp-full').onclick = function () {
     if (P.immersive) {
-      
+      // 退出沉浸态：顺带退出可能存在的原生全屏
       P.immersive = false;
+      P.fsOn = false;
       if (isLayerFullscreen()) exitFullscreen();
       onFullscreenChange();
     } else {
-      
-      
+      // 进入沉浸态：原生全屏负责隐藏系统状态栏/导航栏（竖屏、横屏都要「真正的
+      // 全屏」），失败也不影响——播放层 fixed inset:0 本来就盖满页面。翻转写在
+      // 内层 #rp-slide 上，UA 的 :fullscreen 样式清不掉子元素的 transform，
+      // 不会再出现「闪一下翻转又被拍回竖屏」。
       P.immersive = true;
+      P.fsOn = false;
       var ok = enterFullscreen($('rp-layer'));
       if (ok && typeof ok.then === 'function') {
         ok.then(function () { syncLandscapeRotate(); }).catch(function () {  });
@@ -2986,7 +3253,7 @@ h1{font-size:18px;margin:0;letter-spacing:.5px}
         P.touch.moved = true;
         clearTimeout(P.holdT);
         setFast(false);
-        
+        // 水平位移占主导 → 进入滑动改进度模式（垂直滑动仍是切换上下集）
         if (adx > ady && P.video && isFinite(P.video.duration) && P.video.duration > 1) {
           P.touch.mode = 'seek';
           P.seekBase = P.video.currentTime;
@@ -3011,7 +3278,7 @@ h1{font-size:18px;margin:0;letter-spacing:.5px}
       if (P.fast) { setFast(false); return; }
       if (t.multi) return;
       if (t.mode === 'seek') {
-        
+        // 滑动改进度：松手一次性 seek（拖动过程只做预览，不打网络请求）
         P.seekDrag = false;
         if (P.video && P.seekPreview != null && isFinite(P.seekPreview)) {
           try { P.video.currentTime = P.seekPreview; } catch (err) {  }
@@ -3033,8 +3300,8 @@ h1{font-size:18px;margin:0;letter-spacing:.5px}
         return;
       }
       if (t.woke) return;
-      
-      
+      // 暂停时单击直接播放（画面上已有播放图标提示）；
+      // 播放中保持「单击唤出控件、快速连点暂停」
       if (P.video && P.video.paused && !P.ended) {
         P.tapAt = 0;
         togglePlay();
@@ -3066,9 +3333,9 @@ h1{font-size:18px;margin:0;letter-spacing:.5px}
     tap.addEventListener('mouseup', function (e) { if (!usedTouch) onUp(e); });
 
     var dragging = false;
-    
-    
-    
+    // 拖动过程只做预览（挪进度条与时间文字），松手才真正 seek：
+    // 每个 pointermove 都 seek 会向服务端打出密集的 Range 请求，
+    // 请求互相打断后播放器极易停在 waiting，表现为拖不动/反复从头播
     function progPreview(e) {
       var r = $('rp-track').getBoundingClientRect();
       var p = pt(e);
@@ -3121,7 +3388,7 @@ h1{font-size:18px;margin:0;letter-spacing:.5px}
     }
     $('rp-prog').addEventListener('pointerup', progEnd);
     $('rp-prog').addEventListener('pointercancel', function (e) {
-      
+      // 取消拖动时不 seek，恢复到当前播放位置
       if (!dragging) return;
       dragging = false;
       P.dragging = false;
@@ -3150,31 +3417,39 @@ h1{font-size:18px;margin:0;letter-spacing:.5px}
     var on = P.immersive;
     var t = $('rp-full-t');
     if (t) t.textContent = on ? '退出' : '全屏';
-    
-    
+    // 横屏视频全屏时尝试锁横屏（锁不住由 syncLandscapeRotate 做 CSS 兜底）；
+    // 退出全屏恢复自动旋转
     if (on) lockLandscapeForVideo();
     else unlockOrientation();
-    
+    // 自动清晰度按播放器尺寸选档：全屏/退出全屏后重新判定
     clearTimeout(P.qualityT);
     P.qualityT = setTimeout(reapplyAutoQuality, 300);
   }
   function onNativeFsChange() {
-    
-    
-    if (P.immersive && !isLayerFullscreen()) P.immersive = false;
+    // 只跟随「我们自己请求的播放层原生全屏」：进入（el===rp-layer）时记住 fsOn，
+    // 之后只有 fsOn===true 且 el 离开 rp-layer（被系统/用户收走）才退出沉浸态。
+    // 其余 fullscreenchange（壳子把 <video> 单独拉全屏、伪造事件、请求被拒后
+    // 冒出来的事件）一律忽略——否则刚做好的 CSS 翻转会闪一下就被撤掉。
+    var el = document.fullscreenElement || document.webkitFullscreenElement;
+    if (el === $('rp-layer')) { P.fsOn = true; return; }
+    if (!P.fsOn) return;
+    // 我们的原生全屏确实被收走了（ESC / 返回键 / 壳子强制退出）
+    P.fsOn = false;
+    if (!P.immersive) return;
+    P.immersive = false;
     onFullscreenChange();
   }
   document.addEventListener('fullscreenchange', onNativeFsChange);
-  
+  // 旧 webkit 内核（部分 Android WebView / iOS）只发 webkitfullscreenchange
   document.addEventListener('webkitfullscreenchange', onNativeFsChange);
-  
+  // 手机物理旋转或宿主改变方向后重判：CSS 兜底旋转要跟实际方向保持一致
   window.addEventListener('orientationchange', function () {
     if ($('rp-layer').hidden) return;
     setTimeout(syncLandscapeRotate, 300);
   });
   window.addEventListener('resize', function () {
     if ($('rp-layer').hidden) return;
-    
+    // 窗口宽高比变了（转屏/全屏/地址栏收起）：立即校正 CSS 旋转状态
     syncLandscapeRotate();
     clearTimeout(P.qualityT);
     P.qualityT = setTimeout(reapplyAutoQuality, 400);
@@ -3373,7 +3648,7 @@ h1{font-size:18px;margin:0;letter-spacing:.5px}
       renderChats(data);
 
       if (data && data.refresh_error) toast('频道更新失败，显示的是本地列表');
-      updateRecBanner();
+      applyChatState((data && data.list) || []);
     }).catch(function () {
       loadChats();
     });
@@ -3384,7 +3659,7 @@ h1{font-size:18px;margin:0;letter-spacing:.5px}
     box.innerHTML = '<div class="cs" style="padding:14px 2px">正在读取频道…</div>';
     api('/api/chats').then(function (data) {
       renderChats(data);
-      updateRecBanner();
+      applyChatState((data && data.list) || []);
     }).catch(function (e) {
       $('chat-sum').textContent = '';
       box.innerHTML = '<div class="cs" style="padding:14px 2px">读取失败：' + esc(e.message) + '</div>';
@@ -3453,7 +3728,7 @@ h1{font-size:18px;margin:0;letter-spacing:.5px}
   $('settings-close').onclick = function () { openSettings(false); };
   $('settings-mask').onclick = function () { openSettings(false); };
 
-  
+  // 退出登录：双击确认防误触，成功后刷新登录态（banner 回到未登录，库仍可浏览）
   var logoutArmedAt = 0;
   $('btn-logout').onclick = function () {
     var btn = this;
@@ -3475,7 +3750,7 @@ h1{font-size:18px;margin:0;letter-spacing:.5px}
       openSettings(false);
       if (state.playingEp) closePlayer();
       state.auth = null;
-      loginAutoTried = false; 
+      loginAutoTried = false; // 退出后重新自动弹出登录层
       checkAuth();
       refreshFavBadge();
     }).catch(function (e) {
@@ -3575,6 +3850,32 @@ h1{font-size:18px;margin:0;letter-spacing:.5px}
 
   $('btn-clear-video').onclick = clearVideoCache;
 
+  // 空状态里的「加入推荐频道」入口：账号下一个启用的短剧频道都没有，
+  // 或者「全部」列表本来就是 0 部时才给；有内容、只是搜索没命中时不打扰。
+  function syncEmptyCta() {
+    var btn = $('empty-join');
+    var box = $('empty');
+    if (!btn || !box) return;
+    var show = !box.hidden && (state.chanEmpty || state.libEmpty);
+    btn.hidden = !show;
+  }
+
+  // 频道列表 -> state.chanEmpty，并同步空状态入口与顶部提示条
+  function applyChatState(list) {
+    var enabled = 0;
+    (list || []).forEach(function (c) { if (c.enabled) enabled++; });
+    state.chanEmpty = enabled === 0;
+    syncEmptyCta();
+    updateRecBanner();
+    return enabled;
+  }
+
+  function refreshChannelState() {
+    return api('/api/chats').then(function (d) {
+      return applyChatState((d && d.list) || []);
+    }).catch(function () { return state.chanEmpty ? 0 : 1; });
+  }
+
   function openRec(show) {
     $('rec-sheet').hidden = !show;
     if (show) loadRec();
@@ -3632,7 +3933,7 @@ h1{font-size:18px;margin:0;letter-spacing:.5px}
       }
       loadRec();
       reloadLibrary();
-      updateRecBanner();
+      refreshChannelState();
     }).catch(function (e) {
       toast('加入失败：' + e.message);
     }).then(function () {
@@ -3642,31 +3943,24 @@ h1{font-size:18px;margin:0;letter-spacing:.5px}
     });
   }
 
-  
+  // 首次使用引导：登录后且没有已启用的频道时弹出；确认/取消后不再自动弹出
   function maybeShowRecPrompt() {
-    try {
-      if (localStorage.getItem('tgdrama.rec_done') === '1') {
-        updateRecBanner();
-        return;
-      }
-    } catch (e) {}
-    if (!$('rec-sheet').hidden) return;
-    api('/api/chats').then(function (d) {
-      var enabled = 0;
-      ((d && d.list) || []).forEach(function (c) {
-        if (c.enabled) enabled++;
-      });
+    var done = false;
+    try { done = localStorage.getItem('tgdrama.rec_done') === '1'; } catch (e) {}
+    refreshChannelState().then(function (enabled) {
+      if (done) return;
       if (enabled > 0) {
-        
+        // 已有自己的启用了的频道：视为设置完成，不再打扰
         try { localStorage.setItem('tgdrama.rec_done', '1'); } catch (e) {}
-        updateRecBanner();
         return;
       }
+      if (!$('rec-sheet').hidden) return;
       openRec(true);
-    }).catch(function () {});
+    });
   }
 
-  
+  // 顶部提示条：账号下没有任何启用的短剧频道时一直挂着（不再要求先点过「暂不加入」）；
+  // 空状态里已经有「加入推荐频道」按钮时就不重复顶一条。
   function updateRecBanner() {
     var el = $('rec-banner');
     if (!el) return;
@@ -3674,15 +3968,9 @@ h1{font-size:18px;margin:0;letter-spacing:.5px}
       el.hidden = true;
       return;
     }
-    api('/api/chats').then(function (d) {
-      var enabled = 0;
-      ((d && d.list) || []).forEach(function (c) {
-        if (c.enabled) enabled++;
-      });
-      el.hidden = !(localStorage.getItem('tgdrama.rec_done') === '1' && enabled === 0);
-    }).catch(function () {
-      el.hidden = true;
-    });
+    var cta = $('empty-join');
+    var ctaVisible = !!(cta && !cta.hidden);
+    el.hidden = !(state.chanEmpty && !ctaVisible);
   }
 
   $('rec-close').onclick = function () { openRec(false); };
@@ -3690,13 +3978,15 @@ h1{font-size:18px;margin:0;letter-spacing:.5px}
   $('rec-skip').onclick = function () {
     try { localStorage.setItem('tgdrama.rec_done', '1'); } catch (e) {}
     openRec(false);
-    updateRecBanner();
+    refreshChannelState();
   };
   $('rec-join-all').onclick = joinAllRec;
   $('rec-banner-go').onclick = function () { openRec(true); };
+  // 空状态里的入口：点开同一个推荐频道弹层（里面是频道列表 + 加入按钮）
+  $('empty-join').onclick = function () { openRec(true); };
 
-  
-  
+  // 宿主桥（TVBox/dsplayer 的 window.fm）可能比页面脚本晚到：宿主要在 html 起来后
+  // 才注入桥、再派发 dsready/fmsdk。这时把后端地址再校正一次，并把没拉到数据的首屏补上。
   function onHostReady() {
     if (BASE !== DEFAULT_BASE && window.fm) {
       BASE = DEFAULT_BASE;
@@ -3708,20 +3998,26 @@ h1{font-size:18px;margin:0;letter-spacing:.5px}
   window.addEventListener('fmsdk', onHostReady);
 
   waitFM().then(ensureBase).then(function () {
-    
+    // video.js 放在地址校正之后加载：否则侧载/宿主托管时会把 html 当脚本拉回来
     ensureVideoJS();
     api('/api/tags').then(function (tags) {
       state.tags = tags || [];
       renderTabs();
     }).catch(function () { renderTabs(); });
     refreshFavBadge();
+    // 榜单由后端后台抓取：首屏先拉一次，还没抓到（首次启动要抓 5 个站点）就每 12 秒再试
+    (function pollRankings(tries) {
+      loadRankings().then(function (n) {
+        if (n === 0 && tries > 0) setTimeout(function () { pollRankings(tries - 1); }, 12000);
+      });
+    })(10);
     checkAuth();
     load();
-    
-    
-    
-    
-    
+    // 未登录时轮询登录状态；登录层打开时加速到 2.5s，便于扫码/输码后立即进入。
+    // 首次 300ms 就跑一次：页面初始化时登录层还没自动弹出（loginOpen=false），
+    // 若按 15s 起算，用户要干等十几秒才能看到二维码/验证码提示。
+    // 每次间隔都按「这一轮 checkAuth 结束后」的 loginOpen 重新决定，
+    // 登录层打开后立刻切到 2.5s，关闭后回到 15s。
     (function scheduleAuthPoll(first) {
       setTimeout(function () {
         var pending = !state.auth || !state.auth.authorized;

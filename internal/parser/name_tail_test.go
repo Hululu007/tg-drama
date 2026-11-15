@@ -2,6 +2,8 @@ package parser
 
 import "testing"
 
+// 剧名末尾残留的集号/范围必须剥掉，否则同一部剧会被拆成
+// 「长生录」「长生录1 10」「长生录11 14」好几个条目。
 func TestTrimEpisodeNoiseFromName(t *testing.T) {
 	p := New()
 	cases := []struct{ caption, file, want string }{
@@ -12,16 +14,16 @@ func TestTrimEpisodeNoiseFromName(t *testing.T) {
 		{"", "岳母的秘密 第1集_watermarked.mp4", "岳母的秘密"},
 		{"", "教师凌辱记第二季_EP-2_watermarked.mp4", "教师凌辱记第二季"},
 		{"", "第十五集预告.mp4", ""},
-
+		// 文件名只写「32集」，没有「第」字
 		{"", "长生录 32集.mp4", "长生录"},
-
+		// 只有预告/水印词的文件名不建剧（Parse 仍返回名字，重建时由 IsJunkName 丢弃）
 		{"", "预告_wm.mp4", ""},
 		{"", "pv预告.mp4", "pv预告"},
-
+		// 水印/压制标记直接粘在名字后面
 		{"", "滴滴代操10水印.mp4", "滴滴代操"},
 		{"", "废柴杂役水印.mp4", "废柴杂役"},
 		{"", "艳母 EP4 processed.mp4", "艳母"},
-
+		// 「水印工具」这类业务名不削残
 		{"", "水印工具.mp4", "水印工具"},
 	}
 	for _, c := range cases {
@@ -36,6 +38,8 @@ func TestTrimEpisodeNoiseFromName(t *testing.T) {
 	}
 }
 
+// 标题与 #标签「互相包含」时（双重校验匹配），先采用更干净的标签名，
+// 即使正文用了《》容器。
 func TestDualCheckTagBeatsContainer(t *testing.T) {
 	p := New()
 	cases := []struct{ caption, want string }{
@@ -54,6 +58,8 @@ func TestDualCheckTagBeatsContainer(t *testing.T) {
 	}
 }
 
+// 只有预告词/水印词的名字（文件名「预告_wm.mp4」「PV预告.mp4」）在重建时
+// 由 IsJunkName 丢弃，不会建出「预告 wm」这种剧。
 func TestPreviewOnlyNameIsJunk(t *testing.T) {
 	for _, n := range []string{"预告 wm", "pv预告", "PV预告", "预告"} {
 		if !IsJunkName(n) {

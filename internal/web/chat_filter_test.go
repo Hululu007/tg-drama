@@ -7,6 +7,8 @@ import (
 	"tgdrama/internal/storage"
 )
 
+// 关闭频道后：该频道带来的剧从列表、搜索、收藏、详情与播放线路里一并消失；
+// 数据不删，重新启用后立刻恢复。
 func TestDisabledChatHidesShows(t *testing.T) {
 	h, store := newTestServer(t)
 	showID, ep1, _ := seedShow(t, store)
@@ -59,6 +61,7 @@ func TestDisabledChatHidesShows(t *testing.T) {
 		t.Fatalf("关闭频道后线路 = %d 条，期望 0", len(lines))
 	}
 
+	// 重新启用：全部恢复
 	if err := store.SetChatEnabled(100, true); err != nil {
 		t.Fatal(err)
 	}
@@ -70,6 +73,7 @@ func TestDisabledChatHidesShows(t *testing.T) {
 	}
 }
 
+// 关闭频道必须让 ETag 变化，否则前端会一直命中 304 看到旧列表。
 func TestDisabledChatChangesVersionTag(t *testing.T) {
 	_, store := newTestServer(t)
 	if _, err := store.UpsertChat(&storage.Chat{TgChatID: 200, Name: "频道", Enabled: true}); err != nil {
@@ -87,6 +91,7 @@ func TestDisabledChatChangesVersionTag(t *testing.T) {
 func TestChatRecommendShowsAllDefaults(t *testing.T) {
 	h, store := newTestServer(t)
 
+	// 账号里没有任何频道时也要完整展示默认清单：新账号才能从这里加入。
 	code, out := doJSON(t, h, http.MethodGet, "/api/chats/recommend", nil)
 	if code != http.StatusOK {
 		t.Fatalf("推荐接口返回 %d %v", code, out)
@@ -100,6 +105,7 @@ func TestChatRecommendShowsAllDefaults(t *testing.T) {
 		t.Fatalf("未加入时也应展示并可点: %v", first)
 	}
 
+	// 已加入的频道（本地有 chats 行）带上「已加入」角标，但不影响列表条数。
 	if _, err := store.UpsertChat(&storage.Chat{TgChatID: 4425471457, Name: "小黄鸭", Username: "aiduanju_huang_666_888"}); err != nil {
 		t.Fatal(err)
 	}

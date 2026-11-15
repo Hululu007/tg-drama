@@ -5,6 +5,7 @@ import (
 	"testing"
 )
 
+// 列表排序：默认自然（最近更新在前），sort=episodes 时按可播集数倒序。
 func TestListShowsSortByEpisodes(t *testing.T) {
 	d, err := Open(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
@@ -19,7 +20,7 @@ func TestListShowsSortByEpisodes(t *testing.T) {
 		}
 	}
 	mustExec(`INSERT INTO chats (id, tg_chat_id, name, enabled, created_at) VALUES (1, 101, 'A', 1, 0)`)
-
+	// 三部剧：集数 1/3/2，更新时间与 id 顺序故意错开，确认排序看的是集数
 	mustExec(`INSERT INTO shows (id, name, norm_name, cover_path, created_at, updated_at) VALUES (1, '一集剧', '一集剧', 'data/covers/1.jpg', 0, 300)`)
 	mustExec(`INSERT INTO shows (id, name, norm_name, created_at, updated_at) VALUES (2, '三集剧', '三集剧', 0, 100)`)
 	mustExec(`INSERT INTO shows (id, name, norm_name, created_at, updated_at) VALUES (3, '两集剧', '两集剧', 0, 200)`)
@@ -62,6 +63,7 @@ func TestListShowsSortByEpisodes(t *testing.T) {
 	}
 }
 
+// 收藏排序：默认按收藏时间倒序，sort=episodes 时按可播集数倒序。
 func TestListFavoriteShowsSortByEpisodes(t *testing.T) {
 	d, err := Open(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
@@ -91,7 +93,7 @@ func TestListFavoriteShowsSortByEpisodes(t *testing.T) {
 			mustExec(`INSERT INTO sources (episode_id, chat_id, doc_id, message_id, created_at) VALUES (?, 1, ?, ?, 0)`, epID, src, src)
 		}
 	}
-
+	// 1 号剧后收藏：自然排序它在前
 	mustExec(`INSERT INTO favorites (show_id, created_at) VALUES (2, 100)`)
 	mustExec(`INSERT INTO favorites (show_id, created_at) VALUES (1, 200)`)
 

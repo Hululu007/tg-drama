@@ -13,13 +13,15 @@ import (
 	"testing"
 )
 
+// 没有封面的短剧也要有图：接口返回占位 SVG，且只在内存里缓存，
+// 不再往磁盘写几千个 .svg 小文件。第二次请求直接命中内存，内容一致。
 func TestCoverPlaceholderInMemory(t *testing.T) {
 	srv, store := newTestServerRaw(t)
 	cacheDir := t.TempDir()
 	srv.SetCacheDir(cacheDir)
 	h := srv.Handler()
 
-	showID, _, _ := seedShow(t, store)
+	showID, _, _ := seedShow(t, store) // 剧名「测试短剧」，没有封面
 
 	req := httptest.NewRequest(http.MethodGet, "/api/covers/"+itoa(showID), nil)
 	rec := httptest.NewRecorder()
@@ -39,10 +41,13 @@ func TestCoverPlaceholderInMemory(t *testing.T) {
 		t.Fatal("占位图不该再写入磁盘缓存")
 	}
 
+	// 占位图必须是可重新校验的：真封面下载完之后浏览器不会继续用旧的占位图。
+	// 早先是 max-age=86400，新封面要等一天才出现。
 	if cc := rec.Header().Get("Cache-Control"); strings.Contains(cc, "max-age=8") {
 		t.Fatalf("占位图 Cache-Control = %q，不能长缓存（真图到了换不回来）", cc)
 	}
 
+	// 第二次请求走内存缓存，内容与 ETag 都一致；带 If-None-Match 时返回 304
 	rec2 := httptest.NewRecorder()
 	h.ServeHTTP(rec2, httptest.NewRequest(http.MethodGet, "/api/covers/"+itoa(showID), nil))
 	if rec2.Code != http.StatusOK || rec2.Body.String() != body {
@@ -57,6 +62,7 @@ func TestCoverPlaceholderInMemory(t *testing.T) {
 	}
 }
 
+// 有真实封面文件时优先发文件，不要用占位图盖掉
 func TestCoverPrefersRealFile(t *testing.T) {
 	srv, store := newTestServerRaw(t)
 	cacheDir := t.TempDir()
@@ -86,6 +92,7 @@ func TestCoverPrefersRealFile(t *testing.T) {
 	}
 }
 
+// 封面文件被删掉（换库/清缓存）时回落到占位图，而不是 404
 func TestCoverFallsBackWhenFileMissing(t *testing.T) {
 	srv, store := newTestServerRaw(t)
 	srv.SetCacheDir(t.TempDir())
@@ -103,6 +110,7 @@ func TestCoverFallsBackWhenFileMissing(t *testing.T) {
 	}
 }
 
+// 支持 WebP 的客户端拿到转码后的图，并落到 webp 缓存目录；ETag 命中返回 304
 func TestCoverServedAsWebP(t *testing.T) {
 	srv, store := newTestServerRaw(t)
 	cacheDir := t.TempDir()
@@ -138,7 +146,7 @@ func TestCoverServedAsWebP(t *testing.T) {
 	if ct := rec.Header().Get("Content-Type"); ct != "image/webp" {
 		t.Fatalf("Content-Type = %q，期望 image/webp", ct)
 	}
-
+	// WebP 容器以 "RIFF....WEBP" 开头
 	body := rec.Body.Bytes()
 	if len(body) < 12 || !bytes.HasPrefix(body, []byte("RIFF")) || !bytes.Contains(body[:12], []byte("WEBP")) {
 		t.Fatalf("响应不是 WebP 数据: %q", body[:min(12, len(body))])
@@ -151,6 +159,7 @@ func TestCoverServedAsWebP(t *testing.T) {
 		t.Fatalf("WebP 没写到 %s: %v", cached, err)
 	}
 
+	// 再请求一次：带 If-None-Match 应拿到 304
 	req2 := httptest.NewRequest(http.MethodGet, "/api/covers/"+itoa(showID), nil)
 	req2.Header.Set("Accept", "image/webp")
 	req2.Header.Set("If-None-Match", rec.Header().Get("ETag"))
